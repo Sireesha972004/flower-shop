@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Petal & Stem — Fresh Bouquets, Delivered</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<header class="site-header">
+  <div class="header-inner">
+    <a href="#" class="brand" data-nav="home">
+      <span class="brand-mark">✿</span>
+      <span class="brand-name">Petal &amp; Stem</span>
+    </a>
+    <nav class="main-nav">
+      <a href="#" data-nav="home">Shop</a>
+      <a href="#" data-nav="track">Track Order</a>
+    </nav>
+    <div class="header-actions">
+      <button class="icon-btn" data-nav="cart" aria-label="View cart">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+        <span class="cart-count" id="cart-count">0</span>
+      </button>
+      <button class="icon-btn" id="open-chat-btn" aria-label="Open chat" title="Chat">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z" />
+        </svg>
+      </button>
+      <button class="btn btn-ghost auth-only" data-nav="orders">My Orders</button>
+      <button class="btn btn-ghost auth-only" data-nav="manage">My Bouquet</button>
+      <div class="guest-actions">
+        <button class="btn btn-ghost" data-nav="login">Log in</button>
+        <button class="btn btn-primary" data-nav="register">Sign up</button>
+      </div>
+      <div class="user-actions auth-only">
+        <span class="hello-user" id="hello-user"></span>
+        <button class="btn btn-ghost" id="logout-btn">Log out</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main id="app"></main>
+
+<footer class="site-footer">
+  <p>🌿 Petal &amp; Stem — grown with care, delivered with love.</p>
+</footer>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script src="app.js?v=20260818a"></script>
+</body>
+</html>
