@@ -227,11 +227,23 @@ authForm.addEventListener('submit', async (event) => {
         }
       }
     } else {
-      result = await api('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
+      try {
+        result = await api('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+      } catch (error) {
+        const message = `${error?.message || ''}`.toLowerCase();
+        if (message.includes('no account found') || message.includes('please register')) {
+          const savedEmail = email;
+          setMode('register');
+          emailInput.value = savedEmail;
+          showError(authError, error.message);
+          return;
+        }
+        throw error;
+      }
     }
 
     localStorage.setItem(TOKEN_KEY, result.token);

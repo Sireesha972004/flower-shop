@@ -14,14 +14,16 @@ from app.tts import AUDIO_DIR, generate_audio_file
 
 
 app = FastAPI(title="Vox API")
-USERS_PATH = Path("users.json")
-JOBS_PATH = Path("jobs.json")
+ROOT_DIR = Path(__file__).resolve().parent.parent
+USERS_PATH = ROOT_DIR / "users.json"
+JOBS_PATH = ROOT_DIR / "jobs.json"
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 password_hasher = PasswordHasher()
 users_lock = Lock()
 jobs_lock = Lock()
 tokens: dict[str, str] = {}
 chunks: dict[str, dict[str, str]] = {}
+users_db: dict[str, dict[str, str] | str] = {}
 AUDIO_DIR.mkdir(exist_ok=True)
 
 
@@ -52,14 +54,45 @@ class ResetPasswordRequest(BaseModel):
     password: str = Field(min_length=12)
 
 
+def persist_users() -> None:
+    try:
+        USERS_PATH.write_text(json.dumps(users_db, indent=2), encoding="utf-8")
+    except OSError as error:
+        print(f"Could not save users: {error}")
+
+
 def load_users() -> dict[str, dict[str, str] | str]:
-    if not USERS_PATH.exists():
-        return {}
-    return json.loads(USERS_PATH.read_text(encoding="utf-8"))
+    return users_db
 
 
 def save_users(users: dict[str, dict[str, str] | str]) -> None:
-    USERS_PATH.write_text(json.dumps(users, indent=2), encoding="utf-8")
+    if users is not users_db:
+        users_db.clear()
+        users_db.update(users)
+    persist_users()
+
+
+def init_users() -> None:
+    if not USERS_PATH.exists():
+        return
+    try:
+        stored = json.loads(USERS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+    if isinstance(stored, dict):
+        users_db.update(stored)
+
+
+def ensure_user(email: str, password: str, username: str = "") -> dict[str, str]:
+    record = users_db.get(email)
+    if isinstance(record, dict) and not username:
+        username = record.get("username", "").strip()
+    users_db[email] = {
+        "username": username or email.split("@")[0],
+        "password_hash": password_hasher.hash(password),
+    }
+    persist_users()
+    return users_db[email]
 
 
 def load_chunks() -> None:
@@ -130,6 +163,7 @@ async def process_chunk(chunk_id: str, text: str, voice: str) -> None:
         print(f"Audio generation failed for {chunk_id}: {error}")
 
 
+init_users()
 load_chunks()
 
 
@@ -159,10 +193,19 @@ def register(body: RegisterRequest) -> dict[str, str]:
 @app.post("/api/login")
 def login(body: LoginRequest) -> dict[str, str]:
     email = normalize_email(body.email)
-    users = load_users()
-    password_hash = get_password_hash(users.get(email))
+    password_hash = get_password_hash(users_db.get(email))
     if not password_hash:
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
+        # Render's disk is ephemeral, so accounts disappear after a restart.
+        # Recreate the account on sign-in when the password meets register rules.
+        if len(body.password) < 12:
+            raise HTTPException(
+                status_code=401,
+                detail="No account found. Please register with a password of at least 12 characters.",
+            )
+        with users_lock:
+            if not get_password_hash(users_db.get(email)):
+                ensure_user(email, body.password)
+        return issue_token(email)
     try:
         password_hasher.verify(password_hash, body.password)
     except VerifyMismatchError as error:
@@ -176,14 +219,10 @@ def forgot_password(body: ResetPasswordRequest) -> dict[str, str]:
     with users_lock:
         users = load_users()
         record = users.get(email)
-        if not record:
-            raise HTTPException(status_code=404, detail="No account found for this email.")
+        username = ""
         if isinstance(record, dict):
-            record["password_hash"] = password_hasher.hash(body.password)
-            users[email] = record
-        else:
-            users[email] = password_hasher.hash(body.password)
-        save_users(users)
+            username = record.get("username", "").strip()
+        ensure_user(email, body.password, username)
     return {"message": "Password updated. You can sign in now.", "email": email}
 
 
