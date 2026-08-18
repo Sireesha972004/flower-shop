@@ -307,6 +307,10 @@ button[type="submit"]:disabled { opacity: .65; cursor: wait; }
 }
 .job-copy strong { font-size: 15px; }
 .job-copy small { margin-top: 4px; color: #7a746c; font-size: 13px; }
+.job audio {
+  width: 168px;
+  height: 32px;
+}
 .mark {
   width: 22px;
   height: 22px;

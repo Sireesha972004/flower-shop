@@ -1,29 +1,28 @@
 import json
-import os
+from io import BytesIO
 from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
-import redis
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from app.tts import AUDIO_DIR, generate_audio_file
+
 
 app = FastAPI(title="Vox API")
-QUEUE_NAME = os.getenv("QUEUE_NAME", "vox")
 USERS_PATH = Path("users.json")
+JOBS_PATH = Path("jobs.json")
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 password_hasher = PasswordHasher()
 users_lock = Lock()
+jobs_lock = Lock()
 tokens: dict[str, str] = {}
 chunks: dict[str, dict[str, str]] = {}
-redis_client = redis.Redis(
-    host=os.getenv("REDIS_HOST", "localhost"),
-    port=int(os.getenv("REDIS_PORT", "6379")),
-    decode_responses=True,
-)
+AUDIO_DIR.mkdir(exist_ok=True)
 
 
 class ChunkRequest(BaseModel):
@@ -63,6 +62,30 @@ def save_users(users: dict[str, dict[str, str] | str]) -> None:
     USERS_PATH.write_text(json.dumps(users, indent=2), encoding="utf-8")
 
 
+def load_chunks() -> None:
+    if not JOBS_PATH.exists():
+        return
+    try:
+        stored = json.loads(JOBS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+    if isinstance(stored, dict):
+        chunks.update(stored)
+
+
+def persist_chunks() -> None:
+    JOBS_PATH.write_text(json.dumps(chunks, indent=2), encoding="utf-8")
+
+
+def upsert_job(chunk_id: str, **fields: str) -> dict[str, str]:
+    with jobs_lock:
+        job = {**chunks.get(chunk_id, {}), **fields, "chunkId": chunk_id}
+        job["audioUrl"] = f"/audio/{chunk_id}.mp3"
+        chunks[chunk_id] = job
+        persist_chunks()
+        return job
+
+
 def get_password_hash(record: dict[str, str] | str | None) -> str | None:
     if isinstance(record, str):
         return record
@@ -98,9 +121,20 @@ def issue_token(email: str) -> dict[str, str]:
     return {"token": token, "email": email, "username": username}
 
 
+async def process_chunk(chunk_id: str, text: str, voice: str) -> None:
+    try:
+        await generate_audio_file(text, chunk_id, voice)
+        upsert_job(chunk_id, status="ready")
+    except Exception as error:
+        upsert_job(chunk_id, status="failed", error="Could not generate audio.")
+        print(f"Audio generation failed for {chunk_id}: {error}")
+
+
+load_chunks()
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
-    redis_client.ping()
     return {"status": "ok"}
 
 
@@ -168,25 +202,59 @@ def library(email: str = Depends(current_email)) -> list[dict[str, str]]:
     return [job for job in chunks.values() if job.get("email") == email]
 
 
+@app.post("/api/extract-text")
+async def extract_text(
+    file: UploadFile = File(...),
+    _email: str = Depends(current_email),
+) -> dict[str, str]:
+    filename = file.filename or "upload"
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="File is too large. Use a file under 5 MB.")
+    if not data:
+        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".pdf":
+        from pypdf import PdfReader
+
+        try:
+            reader = PdfReader(BytesIO(data))
+            text = "\n".join((page.extract_text() or "") for page in reader.pages).strip()
+        except Exception as error:
+            raise HTTPException(status_code=400, detail="Could not read this PDF.") from error
+        if not text:
+            raise HTTPException(status_code=400, detail="Could not extract text from this PDF.")
+    else:
+        text = data.decode("utf-8", errors="ignore").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Could not read text from this file.")
+
+    return {"title": Path(filename).stem, "text": text[:8000]}
+
+
 @app.post("/api/chunks", status_code=202)
-def create_chunk(chunk: ChunkRequest, email: str = Depends(current_email)) -> dict[str, str]:
+async def create_chunk(
+    chunk: ChunkRequest,
+    background_tasks: BackgroundTasks,
+    email: str = Depends(current_email),
+) -> dict[str, str]:
     chunk_id = chunk.chunk_id or str(uuid4())
-    redis_client.rpush(QUEUE_NAME, json.dumps({"chunkId": chunk_id, "text": chunk.text}))
-    chunks[chunk_id] = {
-        "chunkId": chunk_id,
-        "email": email,
-        "title": chunk.title or chunk.text[:48],
-        "voice": chunk.voice,
-        "text": chunk.text,
-        "status": "queued",
-    }
-    return {"chunkId": chunk_id, "status": "queued"}
+    job = upsert_job(
+        chunk_id,
+        email=email,
+        title=chunk.title or chunk.text[:48],
+        voice=chunk.voice,
+        text=chunk.text,
+        status="queued",
+    )
+    background_tasks.add_task(process_chunk, chunk_id, chunk.text, chunk.voice)
+    return job
 
 
 @app.post("/api/chunk-ready")
 def chunk_ready(chunk: ChunkReady) -> dict[str, str]:
-    chunks[chunk.chunk_id] = {**chunks.get(chunk.chunk_id, {}), "chunkId": chunk.chunk_id, "status": "ready"}
-    return {"chunkId": chunk.chunk_id, "status": "ready"}
+    return upsert_job(chunk.chunk_id, status="ready")
 
 
 @app.get("/api/chunks/{chunk_id}")
@@ -197,4 +265,5 @@ def get_chunk(chunk_id: str, email: str = Depends(current_email)) -> dict[str, s
     return job
 
 
+app.mount("/audio", StaticFiles(directory=str(AUDIO_DIR)), name="audio")
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

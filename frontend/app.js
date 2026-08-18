@@ -109,13 +109,26 @@ async function api(path, options = {}) {
   return data;
 }
 
+function statusLabel(job) {
+  if (job.status === 'ready') return 'Ready · tap play';
+  if (job.status === 'failed') return 'Audio generation failed';
+  return 'Generating audio...';
+}
+
+function bindAudio(node, job) {
+  const audio = node.querySelector('audio');
+  const ready = job.status === 'ready' && job.audioUrl;
+  audio.hidden = !ready;
+  if (ready) audio.src = job.audioUrl;
+}
+
 function renderJob(job) {
   const node = template.content.firstElementChild.cloneNode(true);
   node.dataset.id = job.chunkId;
   node.querySelector('strong').textContent = job.title || job.text || 'Untitled';
-  const ready = job.status === 'ready';
-  node.querySelector('small').textContent = ready ? 'Ready · 1/1 parts' : 'Queued';
-  node.querySelector('.mark').hidden = !ready;
+  node.querySelector('small').textContent = statusLabel(job);
+  node.querySelector('.mark').hidden = job.status !== 'ready';
+  bindAudio(node, job);
   return node;
 }
 
@@ -131,17 +144,21 @@ async function loadLibrary() {
 }
 
 async function poll(id) {
-  for (let i = 0; i < 30; i += 1) {
+  for (let i = 0; i < 60; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     const job = await api(`/api/chunks/${id}`, { headers: authHeaders() });
     const node = jobs.querySelector(`[data-id="${id}"]`);
     if (!node) return;
-    if (job.status === 'ready') {
-      node.querySelector('small').textContent = 'Ready · 1/1 parts';
-      node.querySelector('.mark').hidden = false;
+    node.querySelector('small').textContent = statusLabel(job);
+    node.querySelector('.mark').hidden = job.status !== 'ready';
+    bindAudio(node, job);
+    if (job.status === 'ready') return;
+    if (job.status === 'failed') {
+      showError(createError, job.error || 'Could not generate audio.');
       return;
     }
   }
+  showError(createError, 'Audio is still generating. Try Refresh in a moment.');
 }
 
 document.querySelectorAll('.mode-pill').forEach((button) => {
@@ -247,10 +264,10 @@ voiceForm.addEventListener('submit', async (event) => {
       body: JSON.stringify({ text, title, voice }),
     });
     empty.hidden = true;
-    jobs.prepend(renderJob({ ...job, title: title || text, text, status: 'queued' }));
+    jobs.prepend(renderJob({ ...job, title: job.title || title || text, text }));
     document.querySelector('#text').value = '';
     document.querySelector('#title').value = '';
-    poll(job.chunkId);
+    if (job.status !== 'ready') poll(job.chunkId);
   } catch (error) {
     showError(createError, error.message);
   } finally {
@@ -262,12 +279,20 @@ pdfInput.addEventListener('change', async () => {
   const file = pdfInput.files[0];
   pdfInput.value = '';
   if (!file) return;
-  if (file.name.toLowerCase().endsWith('.pdf')) {
-    showError(createError, 'PDF text extraction is not enabled yet. Paste the text instead.');
-    return;
+  showError(createError, '');
+  try {
+    const body = new FormData();
+    body.append('file', file);
+    const result = await api('/api/extract-text', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token()}` },
+      body,
+    });
+    document.querySelector('#title').value ||= result.title || file.name.replace(/\.[^.]+$/, '');
+    document.querySelector('#text').value = result.text || '';
+  } catch (error) {
+    showError(createError, error.message);
   }
-  document.querySelector('#title').value ||= file.name.replace(/\.[^.]+$/, '');
-  document.querySelector('#text').value = await file.text();
 });
 
 async function boot() {
