@@ -525,7 +525,6 @@ function renderBuyerOrderDetails(order) {
         <div><span class="tracking-meta-label">Payment status</span><strong>${escapeHtml(order.paymentStatusLabel || order.paymentStatus || 'Pending')}</strong></div>
         <div><span class="tracking-meta-label">Payment method</span><strong>${escapeHtml(order.paymentMethodLabel || order.paymentMethod || 'Online payment')}</strong></div>
         <div><span class="tracking-meta-label">Total amount</span><strong>${formatCurrency(order.total)}</strong></div>
-        <div><span class="tracking-meta-label">Seller</span><strong>${escapeHtml(order.sellerName || 'Petal & Stem')}</strong></div>
         <div><span class="tracking-meta-label">Tracking</span><strong>${escapeHtml(order.trackingNumber || 'Pending')}</strong></div>
       </div>
       <div class="buyer-order-items">
@@ -551,13 +550,6 @@ function renderOrderProgress(progress) {
   `;
 }
 
-function actorClass(role) {
-  if (role === 'buyer') return 'is-buyer';
-  if (role === 'seller') return 'is-seller';
-  if (role === 'admin') return 'is-admin';
-  return 'is-system';
-}
-
 function renderOrderTimeline(timeline) {
   if (!timeline || !timeline.length) {
     return '<p class="tracking-empty">No tracking updates yet.</p>';
@@ -565,15 +557,11 @@ function renderOrderTimeline(timeline) {
   return `
     <div class="tracking-timeline">
       ${timeline.slice().reverse().map(event => `
-        <div class="tracking-event ${actorClass(event.actorRole)}">
+        <div class="tracking-event">
           <div class="tracking-event-head">
-            <div>
-              <span class="tracking-actor">${escapeHtml(event.actorLabel || 'Update')}</span>
-              <strong>${escapeHtml(event.label || event.status)}</strong>
-            </div>
+            <strong>${escapeHtml(event.actorLabel ? `${event.actorLabel} · ${event.label || event.status}` : (event.label || event.status))}</strong>
             <span>${formatDateTime(event.createdAt)}</span>
           </div>
-          ${event.actorName ? `<p class="tracking-actor-name">${escapeHtml(event.actorName)}</p>` : ''}
           ${event.note ? `<p>${escapeHtml(event.note)}</p>` : ''}
           ${event.location ? `<p class="tracking-location">${escapeHtml(event.location)}</p>` : ''}
         </div>
@@ -587,46 +575,35 @@ function renderTrackingNoteForm(order, noteRole) {
   const isSeller = noteRole === 'seller';
   return `
     <form class="tracking-note-form" data-tracking-note-form="${escapeHtml(order.id)}" data-note-role="${escapeHtml(noteRole)}">
-      <label for="tracking-note-${escapeHtml(order.id)}">${isSeller ? 'Seller update for the buyer' : 'Message the seller'}</label>
-      <textarea id="tracking-note-${escapeHtml(order.id)}" name="note" data-tracking-note="${escapeHtml(order.id)}" maxlength="400" rows="2" placeholder="${isSeller ? 'Example: Bouquet is packed and leaving the studio now.' : 'Example: Please call 10 minutes before delivery.'}"></textarea>
-      <button class="btn btn-primary" type="submit">${isSeller ? 'Post seller update' : 'Post buyer update'}</button>
+      <div class="field">
+        <label for="tracking-note-${escapeHtml(order.id)}">${isSeller ? 'Update for the buyer' : 'Message the seller'}</label>
+        <input id="tracking-note-${escapeHtml(order.id)}" name="note" data-tracking-note="${escapeHtml(order.id)}" maxlength="400" placeholder="${isSeller ? 'Optional note for the buyer' : 'Optional note for the seller'}" />
+      </div>
+      <button class="btn btn-primary" type="submit">Send update</button>
     </form>
   `;
 }
 
 function renderOrderTrackingDetails(order, { showActions = false, allowNotes = false, noteRole = 'buyer' } = {}) {
-  const lastScan = order.lastScan || (order.timeline && order.timeline[order.timeline.length - 1]);
   return `
     <div class="tracking-panel">
-      <div class="tracking-hero">
-        <div>
-          <span class="tracking-meta-label">Current status</span>
-          <h3>${escapeHtml(order.statusLabel || order.status)}</h3>
-          <p>${escapeHtml((lastScan && lastScan.note) || 'Live tracking updates appear here as the buyer and seller post them.')}</p>
-        </div>
-        <span class="order-status ${orderStatusClass(order.status)}">${escapeHtml(order.statusLabel || order.status)}</span>
-      </div>
       <div class="tracking-meta">
         <div>
           <span class="tracking-meta-label">Tracking number</span>
           <strong>${escapeHtml(order.trackingNumber || 'Pending')}</strong>
-          ${order.trackingNumber ? `<button class="btn btn-ghost tracking-copy" type="button" data-copy-tracking="${escapeHtml(order.trackingNumber)}">Copy</button>` : ''}
         </div>
         <div>
-          <span class="tracking-meta-label">Last scan</span>
+          <span class="tracking-meta-label">Last updated</span>
           <strong>${formatDateTime(order.updatedAt || order.createdAt)}</strong>
         </div>
-        <div>
-          <span class="tracking-meta-label">Estimated delivery</span>
-          <strong>${order.eta ? formatDateTime(order.eta) : 'Updating soon'}</strong>
-        </div>
-        <div>
-          <span class="tracking-meta-label">Current location</span>
-          <strong>${escapeHtml(order.currentLocation || lastScan?.location || 'Awaiting first scan')}</strong>
-        </div>
+        ${order.deliveryDate ? `
+          <div>
+            <span class="tracking-meta-label">Scheduled delivery</span>
+            <strong>${formatDateTime(order.deliveryDate)}</strong>
+          </div>
+        ` : ''}
       </div>
       ${renderOrderProgress(order.progress)}
-      <h4 class="tracking-timeline-title">Tracking activity</h4>
       ${renderOrderTimeline(order.timeline)}
       ${allowNotes ? renderTrackingNoteForm(order, noteRole) : ''}
       ${showActions && order.canCancel ? `
@@ -652,7 +629,7 @@ function viewOrders(orders) {
         <div class="empty-state">
           <div class="big">📦</div>
           <h3>No orders yet</h3>
-          <p>Once you place an order, it will appear here with live tracking updates from you and the seller.</p>
+          <p>Once you place an order, it will appear here with live tracking updates.</p>
           <button class="btn btn-primary" data-nav="home">Shop bouquets</button>
         </div>
       </div>
@@ -663,7 +640,7 @@ function viewOrders(orders) {
       <div class="section-head orders-head">
         <div>
           <h2>My Orders</h2>
-          <p class="sub">Live delivery scans from you and the seller, including Buyer said / Seller said updates.</p>
+          <p class="sub">Track delivery progress and view your order history.</p>
         </div>
         <button class="btn btn-ghost" data-nav="track">Track by number</button>
       </div>
@@ -687,7 +664,6 @@ function viewOrders(orders) {
               ${o.items.map(it => `<div><span>${it.qty} × ${escapeHtml(it.name)}</span><span>${formatCurrency(it.lineTotal || it.price * it.qty)}</span></div>`).join('')}
             </div>
             <div class="order-total">Total: ${formatCurrency(o.total)}</div>
-            ${renderOrderProgress(o.progress)}
             <div class="order-actions">
               <button class="btn btn-ghost" type="button" data-toggle-tracking="${o.id}">
                 ${state.expandedOrderId === o.id ? 'Hide details' : 'View details'}
@@ -708,7 +684,7 @@ function viewTrackOrder() {
       <div class="section-head">
         <div>
           <h2>Track your order</h2>
-          <p class="sub">Enter your tracking number and account email to see live buyer and seller scans.</p>
+          <p class="sub">Enter your tracking number and account email to view delivery status.</p>
         </div>
       </div>
       <div class="track-card">
@@ -888,17 +864,11 @@ function renderSellerOrderCard(o, { showSellerActions = false, showPaymentOnComp
           </div>
         `).join('')}
       </div>
-      ${renderOrderAddress(o)}
-      ${renderOrderProgress(o.progress)}
       ${showAnyAction ? `
         <div class="seller-order-actions">
-          <div class="seller-order-actions-group">
-            <label class="field-label" for="seller-scan-note-${escapeHtml(o.id)}">Tracking note for the buyer (optional)</label>
-            <textarea id="seller-scan-note-${escapeHtml(o.id)}" data-seller-scan-note="${escapeHtml(o.id)}" maxlength="400" rows="2" placeholder="This will appear on the buyer's tracking timeline as Seller said."></textarea>
-          </div>
           ${showOrderSteps ? `
             <div class="seller-order-actions-group">
-              <span class="field-label">Delivery scans</span>
+              <span class="field-label">Delivery steps (no payment needed)</span>
               <div class="seller-order-actions-row">
                 ${o.canAccept ? `
                   <button class="btn btn-primary" type="button" data-confirm-order="${escapeHtml(o.id)}">Confirm</button>
@@ -936,7 +906,7 @@ function viewReceivedOrders(orders) {
   return `
     <section class="card-panel">
       <h2>Orders Received</h2>
-      <p class="sub">Confirm, pack, ship, and post live tracking updates. The buyer sees every Seller said scan immediately.</p>
+      <p class="sub">You can complete delivery even while payment is still Pending. Mark payment only when you receive the money.</p>
       ${orders.length ? `
         <div class="seller-orders-list">
           ${orders.map(o => renderSellerOrderCard(o, { showSellerActions: true })).join('')}
@@ -1132,7 +1102,7 @@ function viewManageProducts() {
     <div class="view manage-page">
       <div class="section-head manage-heading">
         <h2>Flower Bouquets</h2>
-        <span>Create listings and post live tracking scans</span>
+        <span>Create listings and track completed orders</span>
       </div>
       <div class="manage-tabs" role="tablist">
         ${tabs.map(tab => `

@@ -566,51 +566,21 @@ body.is-admin .admin-only{display:inline-flex;}
 .order-total{text-align:right;font-weight:700;color:var(--green-deep);margin-top:8px;}
 .order-actions{display:flex;justify-content:flex-end;margin-top:14px;}
 .tracking-panel{margin-top:18px;padding-top:18px;border-top:1px solid rgba(47,69,56,0.08);}
-.tracking-hero{
-  display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
-  padding:16px 18px;border-radius:16px;background:rgba(47,69,56,0.06);margin-bottom:16px;
-}
-.tracking-hero h3{margin:4px 0 6px;font-size:26px;color:var(--green-deep);}
-.tracking-hero p{margin:0;font-size:13px;color:var(--muted);}
 .tracking-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:18px;}
 .tracking-meta-label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;}
-.tracking-copy{margin-top:8px;padding:6px 10px;font-size:12px;}
-.tracking-progress{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;list-style:none;padding:0;margin:16px 0 18px;}
+.tracking-progress{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;list-style:none;padding:0;margin:0 0 18px;}
 .tracking-step{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;position:relative;}
-.tracking-step:not(:last-child)::after{
-  content:'';position:absolute;top:7px;left:calc(50% + 12px);width:calc(100% - 24px);height:2px;
-  background:rgba(47,69,56,0.16);
-}
-.tracking-step.complete:not(:last-child)::after{background:var(--green);}
-.tracking-dot{width:14px;height:14px;border-radius:50%;background:rgba(47,69,56,0.18);border:2px solid var(--white);box-shadow:0 0 0 1px rgba(47,69,56,0.12);z-index:1;}
+.tracking-dot{width:14px;height:14px;border-radius:50%;background:rgba(47,69,56,0.18);border:2px solid var(--white);box-shadow:0 0 0 1px rgba(47,69,56,0.12);}
 .tracking-step.complete .tracking-dot,.tracking-step.current .tracking-dot{background:var(--green);}
-.tracking-step.current .tracking-dot{box-shadow:0 0 0 4px rgba(47,69,56,0.12);}
 .tracking-label{font-size:11px;line-height:1.3;color:var(--muted);}
 .tracking-step.current .tracking-label{color:var(--green-deep);font-weight:700;}
-.tracking-timeline-title{margin:8px 0 12px;font-size:16px;color:var(--green-deep);}
 .tracking-timeline{display:grid;gap:12px;}
-.tracking-event{padding:12px 14px;border-radius:14px;background:var(--cream-deep);border-left:4px solid rgba(47,69,56,0.2);}
-.tracking-event.is-buyer{border-left-color:#8a5a3c;background:rgba(138,90,60,0.08);}
-.tracking-event.is-seller{border-left-color:var(--green);background:rgba(47,69,56,0.08);}
-.tracking-event.is-admin{border-left-color:#8a5a00;background:rgba(138,90,0,0.08);}
+.tracking-event{padding:12px 14px;border-radius:14px;background:var(--cream-deep);}
 .tracking-event-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:6px;font-size:13px;}
-.tracking-actor{
-  display:inline-block;margin-right:8px;padding:2px 8px;border-radius:999px;
-  font-size:11px;font-weight:700;letter-spacing:0.02em;background:rgba(47,69,56,0.1);color:var(--green-deep);
-}
-.tracking-event.is-buyer .tracking-actor{background:rgba(138,90,60,0.16);color:#6d4228;}
-.tracking-event.is-seller .tracking-actor{background:rgba(47,69,56,0.16);color:var(--green-deep);}
-.tracking-actor-name{font-weight:600;color:var(--green-deep)!important;}
 .tracking-event p{margin:0;font-size:13px;color:var(--muted);}
 .tracking-location{font-style:italic;}
 .tracking-empty{font-size:13px;color:var(--muted);}
-.tracking-note-form{display:grid;gap:8px;margin-top:16px;}
-.tracking-note-form label{font-size:13px;font-weight:600;color:var(--green-deep);}
-.tracking-note-form textarea,.seller-order-actions textarea{
-  width:100%;padding:10px 12px;border-radius:10px;border:1px solid rgba(47,69,56,0.2);
-  font-size:14px;font-family:inherit;background:var(--cream);resize:vertical;
-}
-.tracking-note-form .btn{justify-self:start;}
+.tracking-note-form{margin-top:16px;}
 .track-view .track-card{background:var(--white);border-radius:16px;padding:24px;box-shadow:var(--shadow);}
 .track-form{display:grid;gap:14px;max-width:520px;}
 .track-result{margin-top:24px;padding-top:24px;border-top:1px solid rgba(47,69,56,0.08);}
@@ -657,7 +627,5 @@ body.is-admin .admin-only{display:inline-flex;}
   .my-bouquet-footer{flex-wrap:wrap;}
   .tracking-progress{grid-template-columns:1fr;}
   .tracking-step{align-items:flex-start;text-align:left;flex-direction:row;}
-  .tracking-step:not(:last-child)::after{display:none;}
-  .tracking-hero{flex-direction:column;}
   .orders-head{flex-direction:column;align-items:stretch;}
 }

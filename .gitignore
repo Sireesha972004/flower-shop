@@ -18,6 +18,7 @@ obj/
 
 tmp_*.json
 tmp_*.py
+*.db
 
 .DS_Store
 Thumbs.db

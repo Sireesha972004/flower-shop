@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 import uuid
@@ -30,8 +31,14 @@ except ImportError:
                     os.environ.setdefault(key.strip(), value)
 
 import httpx
-import pyodbc
 from flask import Flask, jsonify, request, send_from_directory
+from werkzeug.exceptions import HTTPException
+
+try:
+    import pyodbc
+except ImportError:
+    pyodbc = None
+import sqlite3
 
 
 ROOT = Path(__file__).resolve().parent
@@ -63,6 +70,15 @@ ALLOWED_ORIGINS = [
     for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 ]
+SQLITE_PATH = Path(os.getenv("SQLITE_PATH", str(ROOT / "flowershop.db")))
+
+
+def using_sqlite():
+    if os.getenv("RENDER"):
+        return True
+    if os.getenv("USE_SQLITE", "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    return pyodbc is None
 MAX_DELIVERY_ADDRESS_LENGTH = 1000
 CURRENCY_SYMBOL = "₹"
 AI_SYSTEM_PROMPT = (
@@ -475,6 +491,74 @@ def connection_string(database):
     )
 
 
+def adapt_sqlite_sql(sql):
+    adapted = str(sql).replace("dbo.", "")
+    adapted = adapted.replace("LEN(", "LENGTH(")
+    if re.search(r"SELECT\s+TOP\s+1\s", adapted, re.I):
+        adapted = re.sub(r"SELECT\s+TOP\s+1\s", "SELECT ", adapted, count=1, flags=re.I)
+        adapted = adapted.rstrip().rstrip(";") + " LIMIT 1"
+    return adapted
+
+
+class AttrRow:
+    def __init__(self, row):
+        self._mapping = dict(row)
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            return self._mapping[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __getitem__(self, key):
+        return self._mapping[key]
+
+
+class SqliteConnection:
+    def __init__(self, path):
+        self._conn = sqlite3.connect(str(path), timeout=30, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA foreign_keys = ON")
+
+    def execute(self, sql, *params):
+        cursor = self._conn.execute(adapt_sqlite_sql(sql), params if params else ())
+        return SqliteCursor(cursor)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type:
+            self._conn.rollback()
+        else:
+            self._conn.commit()
+        self._conn.close()
+        return False
+
+
+class SqliteCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        return AttrRow(row) if row is not None else None
+
+    def fetchall(self):
+        return [AttrRow(row) for row in self._cursor.fetchall()]
+
+
 def sanitize_for_gemini(value):
     if value is None:
         return ""
@@ -675,6 +759,11 @@ def gemini_chat_completion(messages):
 
 
 def db_connection():
+    if using_sqlite():
+        SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        return SqliteConnection(SQLITE_PATH)
+    if pyodbc is None:
+        raise RuntimeError("pyodbc is required for SQL Server on this machine.")
     return pyodbc.connect(connection_string(SQL_DATABASE))
 
 
@@ -697,8 +786,176 @@ def validate_delivery_address(address):
     return normalized, None
 
 
+def initialize_sqlite():
+    schema_statements = [
+        """
+        CREATE TABLE IF NOT EXISTS Users (
+            Id TEXT NOT NULL PRIMARY KEY,
+            Name TEXT NOT NULL,
+            Email TEXT NOT NULL UNIQUE,
+            PasswordHash BLOB NOT NULL,
+            PasswordSalt BLOB NOT NULL,
+            IsAdmin INTEGER NOT NULL DEFAULT 0,
+            FavoriteFlowers TEXT NULL,
+            FavoriteOccasion TEXT NULL,
+            PreferredPaymentMethod TEXT NULL,
+            PreferredAddressId TEXT NULL,
+            CreatedAt TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS Products (
+            Id TEXT NOT NULL PRIMARY KEY,
+            Name TEXT NOT NULL,
+            Price REAL NOT NULL,
+            Category TEXT NOT NULL,
+            Image TEXT NOT NULL,
+            Description TEXT NOT NULL,
+            CreatedByUserId TEXT NULL,
+            StockQuantity INTEGER NOT NULL DEFAULT 10,
+            IsGiftItem INTEGER NOT NULL DEFAULT 0,
+            OccasionTags TEXT NULL,
+            CreatedAt TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS Addresses (
+            Id TEXT NOT NULL PRIMARY KEY,
+            UserId TEXT NOT NULL,
+            Label TEXT NOT NULL,
+            Recipient TEXT NOT NULL,
+            Line1 TEXT NOT NULL,
+            City TEXT NOT NULL,
+            State TEXT NOT NULL,
+            PostalCode TEXT NOT NULL,
+            Country TEXT NOT NULL,
+            Phone TEXT NOT NULL,
+            CreatedAt TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (UserId) REFERENCES Users(Id) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS Orders (
+            Id TEXT NOT NULL PRIMARY KEY,
+            UserId TEXT NOT NULL,
+            Total REAL NOT NULL,
+            DeliveryAddress TEXT NOT NULL DEFAULT '',
+            DeliveryDate TEXT NULL,
+            PaymentMethod TEXT NULL,
+            PaymentStatus TEXT NOT NULL DEFAULT 'paid',
+            Status TEXT NOT NULL,
+            TrackingNumber TEXT NULL,
+            UpdatedAt TEXT NULL,
+            DeliveredAt TEXT NULL,
+            CancelledAt TEXT NULL,
+            GoogleAddress TEXT NULL,
+            GoogleMapsUrl TEXT NULL,
+            CreatedAt TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (UserId) REFERENCES Users(Id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS OrderStatusEvents (
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            OrderId TEXT NOT NULL,
+            Status TEXT NOT NULL,
+            Note TEXT NULL,
+            Location TEXT NULL,
+            CreatedByUserId TEXT NULL,
+            EventType TEXT NOT NULL DEFAULT 'status',
+            ActorRole TEXT NULL,
+            CreatedAt TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (OrderId) REFERENCES Orders(Id) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS CartItems (
+            UserId TEXT NOT NULL,
+            ProductId TEXT NOT NULL,
+            Quantity INTEGER NOT NULL CHECK (Quantity > 0),
+            PRIMARY KEY (UserId, ProductId),
+            FOREIGN KEY (UserId) REFERENCES Users(Id) ON DELETE CASCADE,
+            FOREIGN KEY (ProductId) REFERENCES Products(Id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS OrderItems (
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            OrderId TEXT NOT NULL,
+            ProductId TEXT NOT NULL,
+            ProductName TEXT NOT NULL,
+            Price REAL NOT NULL,
+            Quantity INTEGER NOT NULL CHECK (Quantity > 0),
+            FOREIGN KEY (OrderId) REFERENCES Orders(Id) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS Sessions (
+            TokenHash TEXT NOT NULL PRIMARY KEY,
+            UserId TEXT NOT NULL,
+            ExpiresAt TEXT NOT NULL,
+            CreatedAt TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (UserId) REFERENCES Users(Id) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_Orders_TrackingNumber
+            ON Orders(TrackingNumber)
+            WHERE TrackingNumber IS NOT NULL
+        """,
+    ]
+    with db_connection() as connection:
+        for statement in schema_statements:
+            connection.execute(statement)
+        seed_catalog_and_admin(connection)
+        connection.commit()
+
+
+def seed_catalog_and_admin(connection):
+    for product in PRODUCTS:
+        exists = connection.execute(
+            "SELECT 1 FROM dbo.Products WHERE Id = ?",
+            product[0],
+        ).fetchone()
+        if not exists:
+            connection.execute(
+                """
+                INSERT INTO dbo.Products
+                    (Id, Name, Price, Category, Image, Description)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                *product,
+            )
+    sync_catalog_prices(connection)
+    sync_catalog_images(connection)
+    admin = connection.execute(
+        "SELECT Id FROM dbo.Users WHERE Email = ?", ADMIN_EMAIL
+    ).fetchone()
+    if admin:
+        connection.execute(
+            "UPDATE dbo.Users SET IsAdmin = 1 WHERE Id = ?", admin.Id
+        )
+    else:
+        admin_id = "u_" + uuid.uuid4().hex[:16]
+        salt, password_hash = hash_password(ADMIN_PASSWORD)
+        connection.execute(
+            """
+            INSERT INTO dbo.Users
+                (Id, Name, Email, PasswordHash, PasswordSalt, IsAdmin)
+            VALUES (?, 'Store Admin', ?, ?, ?, 1)
+            """,
+            admin_id, ADMIN_EMAIL, password_hash, salt,
+        )
+
+
 def initialize_database():
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    if using_sqlite():
+        initialize_sqlite()
+        backfill_order_tracking()
+        backfill_event_actors()
+        return
+
     master = pyodbc.connect(connection_string("master"), autocommit=True)
     try:
         if not master.execute(
@@ -896,36 +1153,7 @@ def initialize_database():
                     WHERE TrackingNumber IS NOT NULL;
             """
         )
-        for product in PRODUCTS:
-            connection.execute(
-                """
-                IF NOT EXISTS (SELECT 1 FROM dbo.Products WHERE Id = ?)
-                    INSERT INTO dbo.Products
-                        (Id, Name, Price, Category, Image, Description)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                product[0], *product,
-            )
-        sync_catalog_prices(connection)
-        sync_catalog_images(connection)
-        admin = connection.execute(
-            "SELECT Id FROM dbo.Users WHERE Email = ?", ADMIN_EMAIL
-        ).fetchone()
-        if admin:
-            connection.execute(
-                "UPDATE dbo.Users SET IsAdmin = 1 WHERE Id = ?", admin.Id
-            )
-        else:
-            admin_id = "u_" + uuid.uuid4().hex[:16]
-            salt, password_hash = hash_password(ADMIN_PASSWORD)
-            connection.execute(
-                """
-                INSERT INTO dbo.Users
-                    (Id, Name, Email, PasswordHash, PasswordSalt, IsAdmin)
-                VALUES (?, 'Store Admin', ?, ?, ?, 1)
-                """,
-                admin_id, ADMIN_EMAIL, password_hash, salt,
-            )
+        seed_catalog_and_admin(connection)
         connection.commit()
 
     backfill_order_tracking()
@@ -968,6 +1196,22 @@ def backfill_order_tracking():
 
 def backfill_event_actors():
     with db_connection() as connection:
+        if using_sqlite():
+            connection.execute(
+                """
+                UPDATE OrderStatusEvents
+                SET ActorRole = CASE
+                    WHEN CreatedByUserId IS NULL THEN 'system'
+                    WHEN CreatedByUserId = (
+                        SELECT UserId FROM Orders WHERE Orders.Id = OrderStatusEvents.OrderId
+                    ) THEN 'buyer'
+                    ELSE 'seller'
+                END
+                WHERE ActorRole IS NULL OR ActorRole = ''
+                """
+            )
+            connection.commit()
+            return
         if connection.execute(
             """
             SELECT 1
@@ -1009,7 +1253,12 @@ def generate_tracking_number(connection):
 def utc_iso(value):
     if not value:
         return None
-    if value.tzinfo is None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+    if getattr(value, "tzinfo", None) is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.isoformat()
 
@@ -2799,8 +3048,15 @@ def admin_update_order_status(order_id):
         return jsonify(order=build_tracking_payload(connection, updated))
 
 
-@app.errorhandler(pyodbc.Error)
+@app.errorhandler(Exception)
 def database_error(error):
+    if isinstance(error, HTTPException):
+        return error
+    db_errors = (sqlite3.Error,)
+    if pyodbc is not None:
+        db_errors = (pyodbc.Error, sqlite3.Error)
+    if not isinstance(error, db_errors):
+        raise error
     app.logger.exception("Database error: %s", error)
     return jsonify(error="Database error. Please try again."), 500
 
@@ -2822,7 +3078,7 @@ def frontend_file(filename):
 
 if __name__ == "__main__":
     initialize_database()
-    print(f"Database: {SQL_SERVER}\\{SQL_DATABASE}")
+    print(f"Database: {'SQLite ' + str(SQLITE_PATH) if using_sqlite() else SQL_SERVER + '\\\\' + SQL_DATABASE}")
     print(f"Admin login: {ADMIN_EMAIL}")
     print(f"AI_PROVIDER: {AI_PROVIDER}")
     print(f"AI_MODEL: {AI_MODEL}")
@@ -2831,3 +3087,5 @@ if __name__ == "__main__":
         print("WARNING: Change the default ADMIN_PASSWORD outside local development.")
     print(f"Petal & Stem running at http://localhost:{PORT}")
     app.run(host="0.0.0.0", port=PORT, debug=False)
+else:
+    initialize_database()
