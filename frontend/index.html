@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vox</title>
+    <link rel="stylesheet" href="styles.css?v=7">
+  </head>
+  <body>
+    <div id="auth-screen">
+      <header class="topbar">
+        <a class="logo" href="/">Vox</a>
+      </header>
+      <section class="auth-wrap">
+        <article class="auth-card">
+          <p class="kicker">Voice generation</p>
+          <h1 class="auth-title">Turn words into<br><span class="auth-accent">audio.</span></h1>
+          <p class="lede">Write a script, generate an audio file, and keep track of every request in one clean workspace.</p>
+          <div class="mode-pills" id="mode-pills" role="tablist">
+            <button type="button" class="mode-pill on" data-mode="signin">Sign in</button>
+            <button type="button" class="mode-pill" data-mode="register">Register</button>
+          </div>
+          <form id="auth-form">
+            <label id="username-row">
+              Username
+              <input id="username" type="text" autocomplete="username" placeholder="Enter your username">
+            </label>
+            <label>
+              Email
+              <input id="email" type="email" autocomplete="email" placeholder="you@example.com" required>
+            </label>
+            <label id="password-row">
+              <span id="password-label">Password</span>
+              <span class="password-wrap">
+                <input id="password" type="password" autocomplete="current-password" placeholder="Enter your password" required>
+                <button type="button" class="eye" id="toggle-password" aria-label="Show password">
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
+              </span>
+            </label>
+            <p id="forgot-row" class="auth-link-row">
+              <button type="button" class="text-link" id="forgot-link">Forgot password?</button>
+            </p>
+            <label id="confirm-row">
+              Confirm password
+              <input id="confirm" type="password" autocomplete="new-password" placeholder="Re-enter your password" minlength="12">
+            </label>
+            <p id="back-signin-row" class="auth-link-row" hidden>
+              <button type="button" class="text-link" id="back-signin">Back to sign in</button>
+            </p>
+            <p id="auth-error" class="form-error" hidden></p>
+            <button type="submit" id="auth-submit">Sign in</button>
+          </form>
+        </article>
+      </section>
+    </div>
+
+    <div id="app-screen" hidden>
+      <header class="topbar app-top">
+        <a class="logo" href="/">Vox</a>
+        <button type="button" class="user-pill" id="sign-out" title="Sign out">
+          <span id="user-email"></span>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3.2"/><path d="M5 19c1.4-3.2 3.8-4.8 7-4.8s5.6 1.6 7 4.8"/></svg>
+        </button>
+      </header>
+      <main class="board">
+        <section class="panel library">
+          <div class="library-head">
+            <h2>Your library</h2>
+            <button type="button" class="ghost" id="refresh">Refresh</button>
+          </div>
+          <div id="empty" class="empty">Your generated audio will appear here.</div>
+          <div id="jobs" class="jobs" aria-live="polite"></div>
+        </section>
+        <section class="panel create">
+          <p class="kicker">Create audio</p>
+          <p class="lede tight">Vox cleans the text, splits it into chunks, and speaks it back to you.</p>
+          <form id="voice-form">
+            <label>
+              Title
+              <input id="title" type="text" placeholder="Optional title">
+            </label>
+            <label>
+              Voice
+              <select id="voice">
+                <option>English Professional Reader</option>
+                <option>Foreign Country Reader</option>
+                <option>Hindi Reader</option>
+                <option>Tamil Reader</option>
+                <option>Telugu Reader</option>
+                <option>Kannada Reader</option>
+              </select>
+            </label>
+            <label>
+              Your text
+              <textarea id="text" maxlength="8000" placeholder="Paste any paragraph, notes, or article text here..." required></textarea>
+            </label>
+            <p id="create-error" class="form-error" hidden></p>
+            <div class="actions">
+              <button type="submit">Convert to voice</button>
+              <label class="ghost file-btn">
+                Upload PDF
+                <input id="pdf" type="file" accept=".pdf,.txt,.md" hidden>
+              </label>
+            </div>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <template id="job-template">
+      <article class="job">
+        <div class="job-copy">
+          <strong></strong>
+          <small></small>
+        </div>
+        <span class="mark" hidden>✓</span>
+      </article>
+    </template>
+    <script src="app.js?v=5"></script>
+  </body>
+</html>
