@@ -76,22 +76,15 @@ function isCatalogProduct(p) {
   return p && !p.isUserCreated;
 }
 
-function partitionShopProducts(products) {
-  const featured = [];
-  const community = [];
-  for (const product of products) {
-    if (isCatalogProduct(product)) featured.push(product);
-    else community.push(product);
-  }
-  return { featured, community };
-}
-
 function filterProductsByCategory(products) {
   if (state.activeFilter === 'All') return products;
   return products.filter(p => p.category === state.activeFilter);
 }
 
 function productCardAction(p) {
+  if (isCatalogProduct(p)) {
+    return '';
+  }
   if (p.isMine) {
     return `<span class="owner-product-badge">Your Product</span>`;
   }
@@ -292,7 +285,7 @@ function viewHome() {
   if (state.activeFilter !== 'All' && !categories.includes(state.activeFilter)) {
     state.activeFilter = 'All';
   }
-  // Show every seller + featured bouquet in one shop grid for all visitors.
+  // Show every bouquet in one shop grid for all visitors.
   const filtered = filterProductsByCategory(state.products);
   const gridHtml = filtered.length
     ? filtered.map(productCard).join('')
@@ -329,7 +322,6 @@ function viewHome() {
     </div>
     <div class="filters">
       ${categories.map(c => `<button type="button" class="chip ${c === state.activeFilter ? 'active' : ''}" data-filter="${c}">${escapeHtml(c)}</button>`).join('')}
-      <button class="btn btn-ghost btn-sm" type="button" data-reload-products>Refresh shop</button>
     </div>
     <div class="product-grid ${filtered.length ? '' : 'product-grid--empty'}">
       ${gridHtml}
@@ -356,8 +348,8 @@ function renderProductDetailModal() {
           <span class="product-cat">${escapeHtml(p.category)}</span>
           <h2 id="product-modal-title" class="product-name">${escapeHtml(p.name)}</h2>
           <p class="product-desc">${escapeHtml(p.description)}</p>
-          ${p.isUserCreated && !p.isMine
-            ? `<p class="product-modal-creator">Created by ${escapeHtml(p.creatorName || 'Community seller')}</p>`
+          ${p.isUserCreated && !p.isMine && p.creatorName
+            ? `<p class="product-modal-creator">Created by ${escapeHtml(p.creatorName)}</p>`
             : ''}
           <div class="product-modal-footer">
             <span class="product-price">${formatCurrency(p.price)}</span>
@@ -372,14 +364,18 @@ function renderProductDetailModal() {
 function productCard(p) {
   const creatorTag = p.isMine
     ? `<span class="creator-badge creator-badge-top owner-product-badge">Your Product</span>`
-    : p.isUserCreated
-      ? `<span class="creator-badge creator-badge-top">Created by ${escapeHtml(p.creatorName || 'Community seller')}</span>`
+    : (p.isUserCreated && p.creatorName)
+      ? `<span class="creator-badge creator-badge-top">Created by ${escapeHtml(p.creatorName)}</span>`
       : '';
-  const priceHtml = `<span class="product-price">${formatCurrency(p.price)}</span>`;
+  const priceHtml = isCatalogProduct(p)
+    ? ''
+    : `<span class="product-price">${formatCurrency(p.price)}</span>`;
   const actionHtml = productCardAction(p);
-  const footerHtml = `<div class="product-footer">${priceHtml}${actionHtml}</div>`;
+  const footerHtml = priceHtml || actionHtml
+    ? `<div class="product-footer">${priceHtml}${actionHtml}</div>`
+    : (isCatalogProduct(p) ? `<div class="product-footer"><span class="product-view-hint">Tap to view details</span></div>` : '');
   return `
-    <div class="product-card" data-product-detail="${p.id}" role="button" tabindex="0" aria-label="View ${escapeHtml(p.name)}">
+    <div class="product-card ${isCatalogProduct(p) ? 'product-card--browse' : ''}" data-product-detail="${p.id}" role="button" tabindex="0" aria-label="View ${escapeHtml(p.name)}">
       ${creatorTag}
       <div class="product-img">${productImageTag(p.image, p.name)}</div>
       <div class="product-body">

@@ -2626,7 +2626,7 @@ def products():
             f"""
             {PRODUCT_SELECT_SQL}
             ORDER BY
-              CASE WHEN p.CreatedByUserId IS NULL THEN 1 ELSE 0 END,
+              CASE WHEN p.CreatedByUserId IS NULL THEN 0 ELSE 1 END,
               p.CreatedAt DESC,
               p.Name
             """
