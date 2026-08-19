@@ -2305,6 +2305,7 @@ def product_json(row, viewer_id=None):
         "isGiftItem": is_gift,
         "occasionTags": occasion_tags,
         "pickupAddress": getattr(row, "PickupAddress", None) or "",
+        "createdAt": utc_iso(getattr(row, "CreatedAt", None)),
     }
 
 
@@ -2333,7 +2334,7 @@ def validate_cart_for_checkout(connection, user_id, items):
 
 PRODUCT_SELECT_SQL = """
     SELECT p.Id, p.Name, p.Price, p.Category, p.Image, p.Description,
-           p.CreatedByUserId, creator.Name AS CreatorName, p.PickupAddress
+           p.CreatedByUserId, creator.Name AS CreatorName, p.PickupAddress, p.CreatedAt
     FROM dbo.Products p
     LEFT JOIN dbo.Users creator ON creator.Id = p.CreatedByUserId
 """
@@ -2437,7 +2438,7 @@ def require_admin(connection):
 def owned_product(connection, product_id, user_id):
     return connection.execute(
         """
-        SELECT Id, Name, Price, Category, Image, Description, CreatedByUserId, PickupAddress
+        SELECT Id, Name, Price, Category, Image, Description, CreatedByUserId, PickupAddress, CreatedAt
         FROM dbo.Products
         WHERE Id = ? AND CreatedByUserId = ?
         """,

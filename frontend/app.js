@@ -73,6 +73,20 @@ function productImageTag(image, alt, extraAttrs = '') {
     onerror="if(!this.dataset.fallback){this.dataset.fallback='1';this.src='${fallback}';}" />`;
 }
 
+function locationIconSvg() {
+  return `<svg class="location-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M12 21s7-4.35 7-10a7 7 0 1 0-14 0c0 5.65 7 10 7 10Z"/>
+    <circle cx="12" cy="11" r="2.5"/>
+  </svg>`;
+}
+
+function useCurrentLocationButton(id, label = 'Use current location') {
+  return `<button class="btn btn-ghost btn-location" type="button" id="${id}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">
+    ${locationIconSvg()}
+    <span class="btn-location-text">${escapeHtml(label)}</span>
+  </button>`;
+}
+
 function isCatalogProduct(p) {
   return p && !p.isUserCreated;
 }
@@ -109,7 +123,12 @@ async function api(path, { method = 'GET', body } = {}) {
   try {
     data = text ? JSON.parse(text) : {};
   } catch (e) {
-    data = { error: text || res.statusText };
+    const plain = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (res.status === 404) {
+      data = { error: 'This feature is unavailable. Restart the app server and try again.' };
+    } else {
+      data = { error: plain || res.statusText || 'Something went wrong.' };
+    }
   }
   if (!res.ok) throw new Error(data.error || data.message || res.statusText || 'Something went wrong.');
   return data;
@@ -345,6 +364,7 @@ function renderProductDetailModal() {
           <span class="product-cat">${escapeHtml(p.category)}</span>
           <h2 id="product-modal-title" class="product-name">${escapeHtml(p.name)}</h2>
           <p class="product-desc">${escapeHtml(p.description)}</p>
+          <p class="product-created">Created ${escapeHtml(formatDateTime(p.createdAt))}</p>
           ${p.pickupAddress ? `<p class="product-modal-creator">Address: ${escapeHtml(p.pickupAddress)}</p>` : ''}
           ${p.isUserCreated && !p.isMine && p.creatorName
             ? `<p class="product-modal-creator">Created by ${escapeHtml(p.creatorName)}</p>`
@@ -374,6 +394,7 @@ function productCard(p) {
         <span class="product-cat">${escapeHtml(p.category)}</span>
         <h3 class="product-name">${escapeHtml(p.name)}</h3>
         <p class="product-desc">${escapeHtml(p.description)}</p>
+        <p class="product-created">Created ${escapeHtml(formatDateTime(p.createdAt))}</p>
         ${footerHtml}
       </div>
     </div>
@@ -550,7 +571,7 @@ function viewCart() {
               <div class="address-lookup-row">
                 <input type="text" id="delivery-address" required autocomplete="off"
                   placeholder="Start typing your Google / current address" />
-                <button class="btn btn-ghost" type="button" id="use-current-location">Use current location</button>
+                ${useCurrentLocationButton('use-current-location')}
               </div>
               <input type="hidden" id="delivery-maps-url" value="" />
               <div class="address-suggestions" id="delivery-suggestions" hidden></div>
@@ -1142,7 +1163,7 @@ function bouquetForm(editing) {
           <input type="text" name="pickupAddress" id="pickup-address" required autocomplete="off"
             placeholder="Start typing your Google / current address"
             value="${escapeHtml(editing?.pickupAddress || '')}" />
-          <button class="btn btn-ghost" type="button" id="use-pickup-location">Use current location</button>
+          ${useCurrentLocationButton('use-pickup-location')}
         </div>
         <div class="address-suggestions" id="pickup-suggestions" hidden></div>
         <p class="field-hint">This address is saved with your bouquet. Type to search, or use current location.</p>
@@ -1187,6 +1208,7 @@ function myBouquetCard(p) {
         </div>
         <h3>${escapeHtml(p.name)}</h3>
         <p>${escapeHtml(p.description)}</p>
+        <p class="product-created">Created ${escapeHtml(formatDateTime(p.createdAt))}</p>
         <div class="my-bouquet-footer">
           <strong>${formatCurrency(p.price)}</strong>
         </div>
