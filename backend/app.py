@@ -952,6 +952,17 @@ def initialize_sqlite():
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS PasswordResets (
+            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            UserId TEXT NOT NULL,
+            TokenHash TEXT NOT NULL,
+            ExpiresAt TEXT NOT NULL,
+            UsedAt TEXT NULL,
+            CreatedAt TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (UserId) REFERENCES Users(Id) ON DELETE CASCADE
+        )
+        """,
+        """
         CREATE UNIQUE INDEX IF NOT EXISTS UX_Orders_TrackingNumber
             ON Orders(TrackingNumber)
             WHERE TrackingNumber IS NOT NULL
@@ -1175,6 +1186,17 @@ def initialize_database():
         ExpiresAt DATETIME2 NOT NULL,
         CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
         CONSTRAINT FK_Sessions_Users FOREIGN KEY (UserId) REFERENCES dbo.Users(Id) ON DELETE CASCADE
+    );
+
+    IF OBJECT_ID('dbo.PasswordResets', 'U') IS NULL
+    CREATE TABLE dbo.PasswordResets (
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        UserId NVARCHAR(40) NOT NULL,
+        TokenHash CHAR(64) NOT NULL,
+        ExpiresAt DATETIME2 NOT NULL,
+        UsedAt DATETIME2 NULL,
+        CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT FK_PasswordResets_Users FOREIGN KEY (UserId) REFERENCES dbo.Users(Id) ON DELETE CASCADE
     );
     """
 
@@ -1794,6 +1816,38 @@ def hash_password(password, salt=None):
     return salt, password_hash
 
 
+def as_bytes(value):
+    if value is None:
+        return b""
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    return bytes(value)
+
+
+def db_now():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def db_datetime(value):
+    if value is None:
+        return None
+    if using_sqlite():
+        if isinstance(value, str):
+            return value
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    return value
+
+
+def show_reset_code_in_response():
+    return bool(os.getenv("RENDER")) or os.getenv(
+        "SHOW_RESET_CODE", ""
+    ).strip().lower() in {"1", "true", "yes"}
+
+
 def public_user(row):
     return {
         "id": row.Id,
@@ -1806,7 +1860,7 @@ def public_user(row):
 def create_session(connection, user_id):
     token = secrets.token_urlsafe(48)
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=7)
+    expires_at = db_datetime(db_now() + timedelta(days=7))
     connection.execute(
         "INSERT INTO dbo.Sessions (TokenHash, UserId, ExpiresAt) VALUES (?, ?, ?)",
         token_hash, user_id, expires_at,
@@ -2053,13 +2107,121 @@ def login():
             email,
         ).fetchone()
         if not user:
-            return jsonify(error="Invalid email or password."), 401
-        _, candidate_hash = hash_password(password, bytes(user.PasswordSalt))
-        if not hmac.compare_digest(candidate_hash, bytes(user.PasswordHash)):
+            return jsonify(
+                error="No account found for this email. Sign up first or use Forgot password."
+            ), 401
+        _, candidate_hash = hash_password(password, as_bytes(user.PasswordSalt))
+        if not hmac.compare_digest(candidate_hash, as_bytes(user.PasswordHash)):
             return jsonify(error="Invalid email or password."), 401
         token = create_session(connection, user.Id)
         connection.commit()
         return jsonify(token=token, user=public_user(user))
+
+
+@app.post("/api/forgot-password")
+def forgot_password():
+    data = request.get_json(silent=True) or {}
+    email = str(data.get("email", "") or "").strip().lower()
+    if not email:
+        return jsonify(error="Email is required."), 400
+
+    response = {
+        "message": "If an account exists for that email, use the reset code to choose a new password.",
+    }
+    with db_connection() as connection:
+        user = connection.execute(
+            "SELECT Id, Email FROM dbo.Users WHERE Email = ?",
+            email,
+        ).fetchone()
+        if not user:
+            return jsonify(response)
+
+        reset_code = f"{secrets.randbelow(1_000_000):06d}"
+        token_hash = hashlib.sha256(reset_code.encode("utf-8")).hexdigest()
+        expires_at = db_datetime(db_now() + timedelta(minutes=15))
+        connection.execute(
+            "UPDATE dbo.PasswordResets SET UsedAt = ? WHERE UserId = ? AND UsedAt IS NULL",
+            db_datetime(db_now()),
+            user.Id,
+        )
+        connection.execute(
+            """
+            INSERT INTO dbo.PasswordResets (UserId, TokenHash, ExpiresAt)
+            VALUES (?, ?, ?)
+            """,
+            user.Id,
+            token_hash,
+            expires_at,
+        )
+        connection.commit()
+        if show_reset_code_in_response():
+            response["resetCode"] = reset_code
+            response["message"] = (
+                "Use this reset code within 15 minutes to choose a new password."
+            )
+        return jsonify(response)
+
+
+@app.post("/api/reset-password")
+def reset_password():
+    data = request.get_json(silent=True) or {}
+    email = str(data.get("email", "") or "").strip().lower()
+    code = str(data.get("code", "") or "").strip()
+    password = str(data.get("password", "") or "")
+    if not email or not code or not password:
+        return jsonify(error="Email, reset code, and new password are required."), 400
+    if len(password) < 6:
+        return jsonify(error="Password must be at least 6 characters."), 400
+
+    token_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
+    with db_connection() as connection:
+        user = connection.execute(
+            "SELECT Id FROM dbo.Users WHERE Email = ?",
+            email,
+        ).fetchone()
+        if not user:
+            return jsonify(error="Invalid reset code or email."), 400
+
+        reset_row = connection.execute(
+            """
+            SELECT Id
+            FROM dbo.PasswordResets
+            WHERE UserId = ? AND TokenHash = ? AND UsedAt IS NULL
+              AND ExpiresAt > SYSUTCDATETIME()
+            ORDER BY Id DESC
+            """,
+            user.Id,
+            token_hash,
+        ).fetchone()
+        if not reset_row:
+            return jsonify(error="Invalid or expired reset code."), 400
+
+        salt, password_hash = hash_password(password)
+        connection.execute(
+            """
+            UPDATE dbo.Users
+            SET PasswordHash = ?, PasswordSalt = ?
+            WHERE Id = ?
+            """,
+            password_hash,
+            salt,
+            user.Id,
+        )
+        connection.execute(
+            """
+            UPDATE dbo.PasswordResets
+            SET UsedAt = ?
+            WHERE Id = ?
+            """,
+            db_datetime(db_now()),
+            reset_row.Id,
+        )
+        connection.execute(
+            "DELETE FROM dbo.Sessions WHERE UserId = ?",
+            user.Id,
+        )
+        connection.commit()
+        return jsonify(message="Password updated. You can log in with your new password.")
 
 
 @app.post("/api/logout")

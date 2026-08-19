@@ -420,6 +420,14 @@ body.is-admin .admin-only{display:inline-flex;}
   font-size:13px;margin-bottom:16px;display:none;
 }
 .form-error.show{display:block;}
+.form-success{
+  display:none;background:#ecfdf3;border:1px solid #86efac;color:#166534;
+  border-radius:12px;padding:12px 14px;font-size:13.5px;margin-bottom:16px;line-height:1.5;
+}
+.form-success.show{display:block;}
+.reset-code{font-family:ui-monospace,Consolas,monospace;font-size:18px;letter-spacing:.12em;}
+.auth-link-row{display:flex;justify-content:flex-end;margin:-4px 0 14px;}
+.auth-link-row button{background:none;border:none;color:var(--plum);font-size:13px;font-weight:600;padding:0;}
 .switch-line{text-align:center;font-size:13.5px;color:var(--muted);margin-top:18px;}
 .switch-line button{background:none;border:none;color:var(--plum);font-weight:700;padding:0;}
 

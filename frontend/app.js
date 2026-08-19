@@ -18,7 +18,9 @@ const state = {
   trackedOrder: null,
   adminOrders: [],
   adminStatusFilter: 'all',
-  productDetailId: null
+  productDetailId: null,
+  prefillResetEmail: null,
+  pendingResetCode: null
 };
 
 const BOUQUET_CATEGORIES = ['Roses', 'Mixed', 'Premium'];
@@ -344,9 +346,72 @@ function viewLogin() {
               </button>
             </div>
           </div>
+          <div class="auth-link-row">
+            <button type="button" data-nav="forgot-password">Forgot password?</button>
+          </div>
           <button class="btn btn-primary btn-block" type="submit">Log in</button>
         </form>
         <div class="switch-line">New here? <button data-nav="register">Create an account</button></div>
+      </div>
+    </div>
+  `;
+}
+
+function viewForgotPassword() {
+  return `
+    <div class="view narrow">
+      <div class="card-panel">
+        <h2>Forgot password</h2>
+        <p class="sub">Enter your email and we will send you a reset code.</p>
+        <div class="form-error" id="auth-error"></div>
+        <div class="form-success" id="auth-success"></div>
+        <form id="forgot-password-form">
+          <div class="field">
+            <label>Email</label>
+            <input type="email" name="email" required autocomplete="email"
+              value="${escapeHtml(state.prefillResetEmail || '')}" />
+          </div>
+          <button class="btn btn-primary btn-block" type="submit">Send reset code</button>
+        </form>
+        <div class="switch-line">Remember your password? <button data-nav="login">Back to log in</button></div>
+      </div>
+    </div>
+  `;
+}
+
+function viewResetPassword() {
+  return `
+    <div class="view narrow">
+      <div class="card-panel">
+        <h2>Reset password</h2>
+        <p class="sub">Enter the reset code and choose a new password.</p>
+        <div class="form-error" id="auth-error"></div>
+        <div class="form-success" id="auth-success"></div>
+        <form id="reset-password-form">
+          <div class="field">
+            <label>Email</label>
+            <input type="email" name="email" required autocomplete="email"
+              value="${escapeHtml(state.prefillResetEmail || '')}" />
+          </div>
+          <div class="field">
+            <label>Reset code</label>
+            <input type="text" name="code" required inputmode="numeric" pattern="[0-9]{6}"
+              maxlength="6" autocomplete="one-time-code" placeholder="6-digit code" />
+          </div>
+          <div class="field">
+            <label>New password</label>
+            <div class="password-input">
+              <input type="password" name="password" required minlength="6" autocomplete="new-password" />
+              <button type="button" class="password-toggle" data-password-toggle
+                aria-label="Show password" aria-pressed="false">
+                <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+                <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 18M10.6 6.2A11 11 0 0 1 12 6c6.5 0 10 6 10 6a18 18 0 0 1-2.1 2.8M6.6 6.6C3.6 8.4 2 12 2 12s3.5 6 10 6a10 10 0 0 0 4.1-.8M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+              </button>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-block" type="submit">Update password</button>
+        </form>
+        <div class="switch-line">Need a code? <button data-nav="forgot-password">Request reset code</button></div>
       </div>
     </div>
   `;
@@ -1181,6 +1246,14 @@ async function render() {
     if (staleRender(seq)) return;
     app.innerHTML = viewLogin();
     bindAuthForm('login');
+  } else if (state.view === 'forgot-password') {
+    if (staleRender(seq)) return;
+    app.innerHTML = viewForgotPassword();
+    bindForgotPasswordForm();
+  } else if (state.view === 'reset-password') {
+    if (staleRender(seq)) return;
+    app.innerHTML = viewResetPassword();
+    bindResetPasswordForm();
   } else if (state.view === 'register') {
     if (staleRender(seq)) return;
     app.innerHTML = viewRegister();
@@ -1254,6 +1327,64 @@ function bindAuthForm(type) {
       navigate('home');
     } catch (e) {
       errBox.textContent = e.message;
+      errBox.classList.add('show');
+    }
+  });
+}
+
+function bindForgotPasswordForm() {
+  const form = document.getElementById('forgot-password-form');
+  const errBox = document.getElementById('auth-error');
+  const successBox = document.getElementById('auth-success');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errBox.classList.remove('show');
+    successBox.classList.remove('show');
+    const fd = new FormData(form);
+    const email = String(fd.get('email') || '').trim().toLowerCase();
+    state.prefillResetEmail = email;
+    try {
+      const data = await api('/forgot-password', { method: 'POST', body: { email } });
+      let message = data.message || 'If an account exists, check your email for a reset code.';
+      if (data.resetCode) {
+        state.pendingResetCode = data.resetCode;
+        message += ` Your reset code: <strong class="reset-code">${escapeHtml(data.resetCode)}</strong>`;
+        successBox.innerHTML = `${message} <button type="button" class="btn btn-ghost btn-sm" data-nav="reset-password">Enter code</button>`;
+      } else {
+        successBox.textContent = message;
+      }
+      successBox.classList.add('show');
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.classList.add('show');
+    }
+  });
+}
+
+function bindResetPasswordForm() {
+  const form = document.getElementById('reset-password-form');
+  const errBox = document.getElementById('auth-error');
+  const successBox = document.getElementById('auth-success');
+  const codeInput = form.querySelector('input[name="code"]');
+  if (state.pendingResetCode && !codeInput.value) {
+    codeInput.value = state.pendingResetCode;
+  }
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errBox.classList.remove('show');
+    successBox.classList.remove('show');
+    const fd = new FormData(form);
+    const payload = Object.fromEntries(fd.entries());
+    state.prefillResetEmail = String(payload.email || '').trim().toLowerCase();
+    try {
+      const data = await api('/reset-password', { method: 'POST', body: payload });
+      state.pendingResetCode = null;
+      successBox.textContent = data.message || 'Password updated. You can log in now.';
+      successBox.classList.add('show');
+      toast('Password updated.');
+      setTimeout(() => navigate('login'), 1200);
+    } catch (err) {
+      errBox.textContent = err.message;
       errBox.classList.add('show');
     }
   });
