@@ -82,9 +82,6 @@ function filterProductsByCategory(products) {
 }
 
 function productCardAction(p) {
-  if (isCatalogProduct(p)) {
-    return '';
-  }
   if (p.isMine) {
     return `<span class="owner-product-badge">Your Product</span>`;
   }
@@ -281,8 +278,8 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 // Views
 // ---------------------------------------------------------------------------
 function viewHome() {
-  // Shop shows seller-created bouquets (default featured catalog removed).
-  const shopProducts = state.products.filter(p => p.isUserCreated);
+  // Public shop: every seller's bouquets (API already returns only user products).
+  const shopProducts = (state.products || []).filter(p => p && (p.isUserCreated || p.createdBy));
   const categories = ['All', ...new Set(shopProducts.map(p => p.category).filter(Boolean))];
   if (state.activeFilter !== 'All' && !categories.includes(state.activeFilter)) {
     state.activeFilter = 'All';
@@ -296,7 +293,7 @@ function viewHome() {
         <h3>${shopProducts.length ? 'No bouquets in this category' : 'No bouquets yet'}</h3>
         <p>${shopProducts.length
           ? 'Try another filter or view all arrangements.'
-          : 'Create a bouquet from My Bouquet to list it in the shop.'}</p>
+          : 'Sellers can create bouquets from My Bouquet and they will appear here for everyone.'}</p>
         <button class="btn btn-primary" type="button" data-reload-products>
           ${shopProducts.length ? 'Show all bouquets' : 'Reload products'}
         </button>
@@ -365,18 +362,12 @@ function renderProductDetailModal() {
 function productCard(p) {
   const creatorTag = p.isMine
     ? `<span class="creator-badge creator-badge-top owner-product-badge">Your Product</span>`
-    : (p.isUserCreated && p.creatorName)
-      ? `<span class="creator-badge creator-badge-top">Created by ${escapeHtml(p.creatorName)}</span>`
-      : '';
-  const priceHtml = isCatalogProduct(p)
-    ? ''
-    : `<span class="product-price">${formatCurrency(p.price)}</span>`;
+    : `<span class="creator-badge creator-badge-top">Created by ${escapeHtml(p.creatorName || 'Seller')}</span>`;
+  const priceHtml = `<span class="product-price">${formatCurrency(p.price)}</span>`;
   const actionHtml = productCardAction(p);
-  const footerHtml = priceHtml || actionHtml
-    ? `<div class="product-footer">${priceHtml}${actionHtml}</div>`
-    : (isCatalogProduct(p) ? `<div class="product-footer"><span class="product-view-hint">Tap to view details</span></div>` : '');
+  const footerHtml = `<div class="product-footer">${priceHtml}${actionHtml}</div>`;
   return `
-    <div class="product-card ${isCatalogProduct(p) ? 'product-card--browse' : ''}" data-product-detail="${p.id}" role="button" tabindex="0" aria-label="View ${escapeHtml(p.name)}">
+    <div class="product-card" data-product-detail="${p.id}" role="button" tabindex="0" aria-label="View ${escapeHtml(p.name)}">
       ${creatorTag}
       <div class="product-img">${productImageTag(p.image, p.name)}</div>
       <div class="product-body">

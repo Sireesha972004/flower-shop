@@ -2235,10 +2235,13 @@ def product_json(row, viewer_id=None):
     is_gift = bool(getattr(row, "IsGiftItem", False))
     occasion_tags = getattr(row, "OccasionTags", None)
     is_user_created = bool(created_by)
-    if is_user_created and viewer_id and created_by == viewer_id:
+    is_mine = bool(viewer_id and created_by and created_by == viewer_id)
+    if is_mine:
         creator_label = "You"
     elif creator_name:
         creator_label = creator_name
+    elif is_user_created:
+        creator_label = "Seller"
     else:
         creator_label = None
     return {
@@ -2251,7 +2254,7 @@ def product_json(row, viewer_id=None):
         "createdBy": created_by,
         "creatorName": creator_label,
         "isUserCreated": is_user_created,
-        "isMine": bool(viewer_id and created_by and created_by == viewer_id),
+        "isMine": is_mine,
         "stockQuantity": stock_quantity,
         "isGiftItem": is_gift,
         "occasionTags": occasion_tags,
@@ -2617,6 +2620,7 @@ def me():
 
 @app.get("/api/products")
 def products():
+    """Public shop listing: every seller's bouquets (not the current user only)."""
     with db_connection() as connection:
         ensure_catalog_available(connection)
         user = current_user(connection)
@@ -2624,10 +2628,8 @@ def products():
         rows = connection.execute(
             f"""
             {PRODUCT_SELECT_SQL}
-            ORDER BY
-              CASE WHEN p.CreatedByUserId IS NULL THEN 0 ELSE 1 END,
-              p.CreatedAt DESC,
-              p.Name
+            WHERE p.CreatedByUserId IS NOT NULL
+            ORDER BY p.CreatedAt DESC, p.Name
             """
         ).fetchall()
         return jsonify(products=[product_json(row, viewer_id) for row in rows])
