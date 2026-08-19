@@ -150,6 +150,38 @@ function toast(msg) {
 // ---------------------------------------------------------------------------
 // Cart helpers
 // ---------------------------------------------------------------------------
+async function loadProducts({ force = false, retries = 3 } = {}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      const data = await api('/products');
+      const products = Array.isArray(data.products) ? data.products : [];
+      state.products = products;
+      if (state.activeFilter !== 'All' && !products.some(p => p.category === state.activeFilter)) {
+        state.activeFilter = 'All';
+      }
+      return products;
+    } catch (err) {
+      lastError = err;
+      if (attempt < retries) {
+        await new Promise(resolve => setTimeout(resolve, 700 * attempt));
+      }
+    }
+  }
+  if (force || !state.products.length) {
+    throw lastError || new Error('Could not load products.');
+  }
+  return state.products;
+}
+
+async function refreshProductsQuietly() {
+  try {
+    await loadProducts({ force: true, retries: 2 });
+  } catch (e) {
+    // Keep existing products on screen if a refresh fails.
+  }
+}
+
 async function refreshCart() {
   if (!state.token) {
     state.cart = { items: [], total: 0 };
@@ -235,10 +267,28 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 // Views
 // ---------------------------------------------------------------------------
 function viewHome() {
-  const categories = ['All', ...new Set(state.products.map(p => p.category))];
+  const categories = ['All', ...new Set(state.products.map(p => p.category).filter(Boolean))];
+  if (state.activeFilter !== 'All' && !categories.includes(state.activeFilter)) {
+    state.activeFilter = 'All';
+  }
   const filtered = state.activeFilter === 'All'
     ? state.products
     : state.products.filter(p => p.category === state.activeFilter);
+
+  const gridHtml = filtered.length
+    ? filtered.map(productCard).join('')
+    : `
+      <div class="empty-state product-empty">
+        <div class="big">✿</div>
+        <h3>${state.products.length ? 'No bouquets in this category' : 'Bouquets are loading'}</h3>
+        <p>${state.products.length
+          ? 'Try another filter or view all arrangements.'
+          : 'If the shop is waking up, this can take a few seconds.'}</p>
+        <button class="btn btn-primary" type="button" data-reload-products>
+          ${state.products.length ? 'Show all bouquets' : 'Reload products'}
+        </button>
+      </div>
+    `;
 
   return `
     <section class="hero">
@@ -250,7 +300,7 @@ function viewHome() {
       </div>
       <div class="hero-art">
         <img src="https://images.unsplash.com/photo-1462530260150-162092dbf011?w=900" alt="A hand-tied bouquet of fresh flowers" />
-        <div class="hero-badge"><strong>${state.products.length}+</strong>fresh arrangements</div>
+        <div class="hero-badge"><strong>${Math.max(state.products.length, 1)}+</strong>fresh arrangements</div>
       </div>
     </section>
 
@@ -261,8 +311,8 @@ function viewHome() {
     <div class="filters">
       ${categories.map(c => `<button type="button" class="chip ${c === state.activeFilter ? 'active' : ''}" data-filter="${c}">${escapeHtml(c)}</button>`).join('')}
     </div>
-    <div class="product-grid">
-      ${filtered.map(productCard).join('')}
+    <div class="product-grid ${filtered.length ? '' : 'product-grid--empty'}">
+      ${gridHtml}
     </div>
     ${renderProductDetailModal()}
   `;
@@ -1243,6 +1293,7 @@ async function render() {
   const seq = ++renderSeq;
 
   if (state.view === 'home') {
+    await refreshProductsQuietly();
     if (staleRender(seq)) return;
     app.innerHTML = viewHome();
   } else if (state.view === 'login') {
@@ -1737,6 +1788,25 @@ app.addEventListener('click', async (e) => {
     return;
   }
 
+  const reloadProducts = e.target.closest('[data-reload-products]');
+  if (reloadProducts) {
+    try {
+      if (!state.products.length) {
+        toast('Loading bouquets...');
+      } else {
+        state.activeFilter = 'All';
+      }
+      await loadProducts({ force: true, retries: 4 });
+      if (!state.products.length) {
+        toast('Still no products. Wait a few seconds and try again.');
+      }
+      render();
+    } catch (err) {
+      toast(err.message || 'Could not load products.');
+    }
+    return;
+  }
+
   const closeProductModal = e.target.closest('.product-modal-close')
     || e.target.classList.contains('product-modal-backdrop');
   if (closeProductModal) {
@@ -2117,10 +2187,9 @@ async function init() {
     }
   }
   try {
-    const data = await api('/products');
-    state.products = data.products;
+    await loadProducts({ force: true, retries: 4 });
   } catch (e) {
-    toast('Could not load products. Is the server running?');
+    toast('Could not load products. Tap Reload products or wait a moment and refresh.');
   }
   await refreshCart();
   await render();

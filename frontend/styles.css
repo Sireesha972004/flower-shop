@@ -286,6 +286,8 @@ body.is-admin .admin-only{display:inline-flex;}
   max-width:1180px;margin:0 auto;padding:20px 28px 60px;
   display:grid;grid-template-columns:repeat(3,1fr);gap:26px;
 }
+.product-grid--empty{grid-template-columns:1fr;}
+.product-empty{margin:12px auto;max-width:420px;}
 .product-card{
   position:relative;background:var(--white);border-radius:var(--radius);overflow:hidden;
   box-shadow:var(--shadow);display:flex;flex-direction:column;

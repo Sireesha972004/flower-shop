@@ -1234,6 +1234,20 @@ def seed_catalog_and_admin(connection):
                 """,
                 *product,
             )
+        else:
+            connection.execute(
+                """
+                UPDATE dbo.Products
+                SET Name = ?, Price = ?, Category = ?, Image = ?, Description = ?
+                WHERE Id = ? AND CreatedByUserId IS NULL
+                """,
+                product[1],
+                product[2],
+                product[3],
+                product[4],
+                product[5],
+                product[0],
+            )
     sync_catalog_prices(connection)
     sync_catalog_images(connection)
     upsert_seed_user(
@@ -1251,6 +1265,23 @@ def seed_catalog_and_admin(connection):
             APP_USER_NAME,
             is_admin=False,
         )
+
+
+def ensure_catalog_available(connection):
+    """Re-seed catalog products if the shop listing is empty or missing defaults."""
+    count_row = connection.execute(
+        "SELECT COUNT(*) AS ProductCount FROM dbo.Products"
+    ).fetchone()
+    total = int(getattr(count_row, "ProductCount", 0) or 0)
+    marker = connection.execute(
+        "SELECT 1 FROM dbo.Products WHERE Id = ?",
+        PRODUCTS[0][0],
+    ).fetchone()
+    if total == 0 or not marker:
+        seed_catalog_and_admin(connection)
+        connection.commit()
+        return True
+    return False
 
 
 def initialize_database():
@@ -2585,12 +2616,16 @@ def me():
 @app.get("/api/products")
 def products():
     with db_connection() as connection:
+        ensure_catalog_available(connection)
         user = current_user(connection)
         viewer_id = user.Id if user else None
         rows = connection.execute(
             f"""
             {PRODUCT_SELECT_SQL}
-            ORDER BY p.CreatedAt DESC, p.Name
+            ORDER BY
+              CASE WHEN p.CreatedByUserId IS NULL THEN 0 ELSE 1 END,
+              p.CreatedAt DESC,
+              p.Name
             """
         ).fetchall()
         return jsonify(products=[product_json(row, viewer_id) for row in rows])
