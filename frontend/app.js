@@ -67,10 +67,22 @@ function isCatalogProduct(p) {
   return p && !p.isUserCreated;
 }
 
-function productCardAction(p) {
-  if (isCatalogProduct(p)) {
-    return '';
+function partitionShopProducts(products) {
+  const featured = [];
+  const community = [];
+  for (const product of products) {
+    if (isCatalogProduct(product)) featured.push(product);
+    else community.push(product);
   }
+  return { featured, community };
+}
+
+function filterProductsByCategory(products) {
+  if (state.activeFilter === 'All') return products;
+  return products.filter(p => p.category === state.activeFilter);
+}
+
+function productCardAction(p) {
   if (p.isMine) {
     return `<span class="owner-product-badge">Your Product</span>`;
   }
@@ -271,22 +283,70 @@ function viewHome() {
   if (state.activeFilter !== 'All' && !categories.includes(state.activeFilter)) {
     state.activeFilter = 'All';
   }
-  const filtered = state.activeFilter === 'All'
-    ? state.products
-    : state.products.filter(p => p.category === state.activeFilter);
+  const { featured, community } = partitionShopProducts(state.products);
+  const filteredFeatured = filterProductsByCategory(featured);
+  const filteredCommunity = filterProductsByCategory(community);
+  const filteredAll = filterProductsByCategory(state.products);
 
-  const gridHtml = filtered.length
-    ? filtered.map(productCard).join('')
-    : `
+  function renderGrid(products, emptyTitle, emptyHint) {
+    if (products.length) return products.map(productCard).join('');
+    return `
       <div class="empty-state product-empty">
         <div class="big">✿</div>
-        <h3>${state.products.length ? 'No bouquets in this category' : 'Bouquets are loading'}</h3>
-        <p>${state.products.length
-          ? 'Try another filter or view all arrangements.'
-          : 'If the shop is waking up, this can take a few seconds.'}</p>
-        <button class="btn btn-primary" type="button" data-reload-products>
-          ${state.products.length ? 'Show all bouquets' : 'Reload products'}
-        </button>
+        <h3>${emptyTitle}</h3>
+        <p>${emptyHint}</p>
+      </div>
+    `;
+  }
+
+  const sectionsHtml = community.length
+    ? `
+      <div class="shop-section">
+        <div class="section-head shop-section-head">
+          <h2>Community bouquets</h2>
+          <span>${filteredCommunity.length} seller arrangement${filteredCommunity.length === 1 ? '' : 's'}</span>
+        </div>
+        <p class="shop-section-note">Bouquets listed by sellers on this site. These can be added to cart and ordered.</p>
+        <div class="product-grid ${filteredCommunity.length ? '' : 'product-grid--empty'}">
+          ${renderGrid(
+            filteredCommunity,
+            state.activeFilter === 'All' ? 'No seller bouquets yet' : 'No seller bouquets in this category',
+            state.activeFilter === 'All'
+              ? 'Create one from My Bouquet, or ask your admin to import seller products to this live site.'
+              : 'Try another filter or view all arrangements.'
+          )}
+        </div>
+      </div>
+      <div class="shop-section">
+        <div class="section-head shop-section-head">
+          <h2>Featured bouquets</h2>
+          <span>${filteredFeatured.length} shop arrangement${filteredFeatured.length === 1 ? '' : 's'}</span>
+        </div>
+        <div class="product-grid ${filteredFeatured.length ? '' : 'product-grid--empty'}">
+          ${renderGrid(
+            filteredFeatured,
+            'No featured bouquets in this category',
+            'Try another filter or view all arrangements.'
+          )}
+        </div>
+      </div>
+    `
+    : `
+      <div class="section-head">
+        <h2>Our Bouquets</h2>
+        <span>${filteredAll.length} arrangement${filteredAll.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="product-grid ${filteredAll.length ? '' : 'product-grid--empty'}">
+        ${renderGrid(
+          filteredAll,
+          state.products.length ? 'No bouquets in this category' : 'Bouquets are loading',
+          state.products.length
+            ? 'Try another filter or view all arrangements.'
+            : 'If the shop is waking up, this can take a few seconds.'
+        )}
+      </div>
+      <div class="shop-section-note shop-section-note--solo">
+        Seller bouquets from My Bouquet will appear here once they are created on this live site.
       </div>
     `;
 
@@ -304,16 +364,11 @@ function viewHome() {
       </div>
     </section>
 
-    <div class="section-head">
-      <h2>Our Bouquets</h2>
-      <span>${filtered.length} arrangement${filtered.length === 1 ? '' : 's'}</span>
-    </div>
     <div class="filters">
       ${categories.map(c => `<button type="button" class="chip ${c === state.activeFilter ? 'active' : ''}" data-filter="${c}">${escapeHtml(c)}</button>`).join('')}
+      <button class="btn btn-ghost btn-sm" type="button" data-reload-products>Refresh shop</button>
     </div>
-    <div class="product-grid ${filtered.length ? '' : 'product-grid--empty'}">
-      ${gridHtml}
-    </div>
+    ${sectionsHtml}
     ${renderProductDetailModal()}
   `;
 }
@@ -355,13 +410,9 @@ function productCard(p) {
     : p.isUserCreated
       ? `<span class="creator-badge creator-badge-top">Created by ${escapeHtml(p.creatorName || 'Community seller')}</span>`
       : '';
-  const priceHtml = isCatalogProduct(p)
-    ? ''
-    : `<span class="product-price">${formatCurrency(p.price)}</span>`;
+  const priceHtml = `<span class="product-price">${formatCurrency(p.price)}</span>`;
   const actionHtml = productCardAction(p);
-  const footerHtml = priceHtml || actionHtml
-    ? `<div class="product-footer">${priceHtml}${actionHtml}</div>`
-    : (isCatalogProduct(p) ? `<div class="product-footer"><span class="product-view-hint">Tap to view details</span></div>` : '');
+  const footerHtml = `<div class="product-footer">${priceHtml}${actionHtml}</div>`;
   return `
     <div class="product-card ${isCatalogProduct(p) ? 'product-card--browse' : ''}" data-product-detail="${p.id}" role="button" tabindex="0" aria-label="View ${escapeHtml(p.name)}">
       ${creatorTag}
@@ -1709,12 +1760,11 @@ function bindProductForm() {
         method: editingId ? 'PUT' : 'POST',
         body: payload
       });
-      const data = await api('/products');
-      state.products = data.products;
+      await loadProducts({ force: true, retries: 3 });
       await refreshMyProducts();
       state.editingProductId = null;
       state.manageTab = 'mine';
-      toast(editingId ? 'Bouquet updated.' : 'Bouquet created.');
+      toast(editingId ? 'Bouquet updated and visible in the shop.' : 'Bouquet created and visible in the shop.');
       render();
     } catch (e) {
       errBox.textContent = e.message;

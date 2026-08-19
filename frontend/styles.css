@@ -281,6 +281,18 @@ body.is-admin .admin-only{display:inline-flex;}
   border-radius:999px;padding:7px 16px;font-size:13px;font-weight:600;
 }
 .chip.active{background:var(--green);color:var(--cream);border-color:var(--green);}
+.filters{
+  max-width:1180px;margin:0 auto;padding:0 28px 8px;
+  display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+}
+.shop-section{max-width:1180px;margin:0 auto;padding:8px 28px 12px;}
+.shop-section-head{padding:12px 0 8px;}
+.shop-section-note{
+  margin:0 0 14px;color:var(--muted);font-size:13.5px;line-height:1.5;
+}
+.shop-section-note--solo{
+  max-width:1180px;margin:0 auto;padding:0 28px 36px;
+}
 
 .product-grid{
   max-width:1180px;margin:0 auto;padding:20px 28px 60px;

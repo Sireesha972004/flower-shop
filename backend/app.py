@@ -2898,6 +2898,142 @@ def create_product():
         return jsonify(product=product_json(row, user.Id)), 201
 
 
+def import_product_row(connection, item, default_seller_id):
+    name = str(item.get("name", "")).strip()
+    category = str(item.get("category", "")).strip()
+    image = str(item.get("image", "")).strip()
+    description = str(item.get("description", "")).strip()
+    seller_email = str(item.get("sellerEmail", "") or "").strip().lower()
+    try:
+        price = round(float(item.get("price", 0)), 2)
+    except (TypeError, ValueError):
+        price = 0
+    if not name or not category or not image or not description or price <= 0:
+        return None, "Each product needs name, category, image, description, and price.", None
+
+    seller_id = default_seller_id
+    if seller_email:
+        seller = connection.execute(
+            "SELECT Id FROM dbo.Users WHERE Email = ?",
+            seller_email,
+        ).fetchone()
+        if seller:
+            seller_id = seller.Id
+        else:
+            seller_id = create_user_account(
+                connection,
+                seller_email,
+                secrets.token_urlsafe(12),
+                name_from_email(seller_email),
+            )
+
+    existing = connection.execute(
+        """
+        SELECT Id FROM dbo.Products
+        WHERE Name = ? AND CreatedByUserId = ?
+        """,
+        name,
+        seller_id,
+    ).fetchone()
+    if existing:
+        connection.execute(
+            """
+            UPDATE dbo.Products
+            SET Price = ?, Category = ?, Image = ?, Description = ?
+            WHERE Id = ?
+            """,
+            price,
+            category,
+            image,
+            description,
+            existing.Id,
+        )
+        return existing.Id, None, "updated"
+
+    product_id = "p_" + uuid.uuid4().hex[:12]
+    connection.execute(
+        """
+        INSERT INTO dbo.Products
+            (Id, Name, Price, Category, Image, Description, CreatedByUserId)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        product_id,
+        name,
+        price,
+        category,
+        image,
+        description,
+        seller_id,
+    )
+    return product_id, None, "imported"
+
+
+@app.get("/api/admin/export-products")
+def export_products():
+    with db_connection() as connection:
+        admin, error = require_admin(connection)
+        if error:
+            return error
+        rows = connection.execute(
+            """
+            SELECT p.Id, p.Name, p.Price, p.Category, p.Image, p.Description,
+                   p.CreatedByUserId, u.Email AS SellerEmail
+            FROM dbo.Products p
+            LEFT JOIN dbo.Users u ON u.Id = p.CreatedByUserId
+            WHERE p.CreatedByUserId IS NOT NULL
+            ORDER BY p.CreatedAt DESC, p.Name
+            """
+        ).fetchall()
+        products = [
+            {
+                "name": row.Name,
+                "price": float(row.Price),
+                "category": row.Category,
+                "image": row.Image,
+                "description": row.Description,
+                "sellerEmail": row.SellerEmail or "",
+            }
+            for row in rows
+        ]
+        return jsonify(products=products)
+
+
+@app.post("/api/admin/import-products")
+def import_products():
+    data = request.get_json(silent=True) or {}
+    items = data.get("products")
+    if not isinstance(items, list) or not items:
+        return jsonify(error="products must be a non-empty list."), 400
+    with db_connection() as connection:
+        admin, error = require_admin(connection)
+        if error:
+            return error
+        imported = 0
+        updated = 0
+        errors = []
+        for index, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                errors.append(f"Row {index}: invalid product object.")
+                continue
+            _product_id, row_error, action = import_product_row(
+                connection, item, admin.Id
+            )
+            if row_error:
+                errors.append(f"Row {index}: {row_error}")
+                continue
+            if action == "updated":
+                updated += 1
+            else:
+                imported += 1
+        connection.commit()
+        return jsonify(
+            imported=imported,
+            updated=updated,
+            errors=errors,
+            message="Seller products imported to the live shop.",
+        )
+
+
 @app.put("/api/products/<product_id>")
 def update_product(product_id):
     fields = product_fields(request.get_json(silent=True) or {})
