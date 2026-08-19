@@ -310,6 +310,7 @@ USER_REQUIRED_TOOLS = {
 
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
     "image/png": ".png",
     "image/webp": ".webp",
     "image/gif": ".gif",
@@ -494,6 +495,7 @@ def connection_string(database):
 def adapt_sqlite_sql(sql):
     adapted = str(sql).replace("dbo.", "")
     adapted = adapted.replace("LEN(", "LENGTH(")
+    adapted = adapted.replace("SYSUTCDATETIME()", "datetime('now')")
     if re.search(r"SELECT\s+TOP\s+1\s", adapted, re.I):
         adapted = re.sub(r"SELECT\s+TOP\s+1\s", "SELECT ", adapted, count=1, flags=re.I)
         adapted = adapted.rstrip().rstrip(";") + " LIMIT 1"
@@ -758,6 +760,57 @@ def gemini_chat_completion(messages):
     })
 
 
+def uploads_dir():
+    if os.getenv("RENDER") or using_sqlite():
+        path = Path(os.getenv("UPLOAD_DIR", "/tmp/flower-uploads"))
+    else:
+        path = FRONTEND_DIR / "uploads"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def image_extension(file):
+    content_type = (file.mimetype or "").lower()
+    extension = ALLOWED_IMAGE_TYPES.get(content_type)
+    if extension:
+        return extension
+    name = str(file.filename or "").lower()
+    for suffix, ext in {".jpg": ".jpg", ".jpeg": ".jpg", ".png": ".png", ".webp": ".webp", ".gif": ".gif"}.items():
+        if name.endswith(suffix):
+            return ext
+    return None
+
+
+def upsert_cart_item(connection, user_id, product_id, quantity):
+    if using_sqlite():
+        connection.execute(
+            """
+            INSERT INTO CartItems (UserId, ProductId, Quantity)
+            VALUES (?, ?, ?)
+            ON CONFLICT(UserId, ProductId)
+            DO UPDATE SET Quantity = Quantity + excluded.Quantity
+            """,
+            user_id,
+            product_id,
+            quantity,
+        )
+        return
+    connection.execute(
+        """
+        MERGE dbo.CartItems AS target
+        USING (SELECT ? AS UserId, ? AS ProductId) AS source
+        ON target.UserId = source.UserId AND target.ProductId = source.ProductId
+        WHEN MATCHED THEN UPDATE SET Quantity = target.Quantity + ?
+        WHEN NOT MATCHED THEN INSERT (UserId, ProductId, Quantity)
+            VALUES (source.UserId, source.ProductId, ?);
+        """,
+        user_id,
+        product_id,
+        quantity,
+        quantity,
+    )
+
+
 def db_connection():
     if using_sqlite():
         SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -949,7 +1002,7 @@ def seed_catalog_and_admin(connection):
 
 
 def initialize_database():
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    uploads_dir()
     if using_sqlite():
         initialize_sqlite()
         backfill_order_tracking()
@@ -2253,11 +2306,10 @@ def upload_image():
     if "image" not in request.files:
         return jsonify(error="Choose an image file from your computer."), 400
     file = request.files["image"]
-    if not file or not file.filename:
+    if not file:
         return jsonify(error="Choose an image file from your computer."), 400
 
-    content_type = (file.mimetype or "").lower()
-    extension = ALLOWED_IMAGE_TYPES.get(content_type)
+    extension = image_extension(file)
     if not extension:
         return jsonify(error="Only JPG, PNG, WEBP, or GIF images are allowed."), 400
 
@@ -2267,9 +2319,9 @@ def upload_image():
     if not data:
         return jsonify(error="The selected image file is empty."), 400
 
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    folder = uploads_dir()
     filename = f"{uuid.uuid4().hex}{extension}"
-    (UPLOADS_DIR / filename).write_bytes(data)
+    (folder / filename).write_bytes(data)
     return jsonify(url=f"/uploads/{filename}"), 201
 
 
@@ -2531,10 +2583,7 @@ def execute_ai_tool(connection, name, args, user):
         )
         if not purchasable:
             return {"error": purchase_error}
-        connection.execute(
-            "MERGE dbo.CartItems AS target USING (SELECT ? AS UserId, ? AS ProductId) AS source ON target.UserId = source.UserId AND target.ProductId = source.ProductId WHEN MATCHED THEN UPDATE SET Quantity = target.Quantity + ? WHEN NOT MATCHED THEN INSERT (UserId, ProductId, Quantity) VALUES (source.UserId, source.ProductId, ?);",
-            user.Id, product_id, quantity, quantity,
-        )
+        upsert_cart_item(connection, user.Id, product_id, quantity)
         items, total = get_cart(connection, user.Id)
         return {"ok": True, "productId": product_id, "items": items, "total": total}
 
@@ -2783,17 +2832,7 @@ def add_cart_item():
         )
         if not purchasable:
             return jsonify(error=purchase_error), 400
-        connection.execute(
-            """
-            MERGE dbo.CartItems AS target
-            USING (SELECT ? AS UserId, ? AS ProductId) AS source
-            ON target.UserId = source.UserId AND target.ProductId = source.ProductId
-            WHEN MATCHED THEN UPDATE SET Quantity = target.Quantity + ?
-            WHEN NOT MATCHED THEN INSERT (UserId, ProductId, Quantity)
-                VALUES (source.UserId, source.ProductId, ?);
-            """,
-            user.Id, product_id, quantity, quantity,
-        )
+        upsert_cart_item(connection, user.Id, product_id, quantity)
         connection.commit()
         return jsonify(ok=True)
 
@@ -3068,7 +3107,7 @@ def index():
 
 @app.route("/uploads/<path:filename>")
 def uploaded_file(filename):
-    return send_from_directory(UPLOADS_DIR, filename)
+    return send_from_directory(uploads_dir(), filename)
 
 
 @app.route("/<path:filename>")
