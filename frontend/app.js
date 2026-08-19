@@ -24,6 +24,7 @@ const state = {
 };
 
 const BOUQUET_CATEGORIES = ['Roses', 'Mixed', 'Premium'];
+const SHOP_FILTERS = ['All', 'Roses', 'Mixed', 'Premium'];
 
 function getBouquetCategoryOptions(editing) {
   const options = new Set(BOUQUET_CATEGORIES);
@@ -279,7 +280,9 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 function viewHome() {
   // Public shop: every seller's bouquets for every visitor.
   const shopProducts = Array.isArray(state.products) ? state.products.slice() : [];
-  const categories = ['All', ...new Set(shopProducts.map(p => p.category).filter(Boolean))];
+  const extraCats = [...new Set(shopProducts.map(p => p.category).filter(Boolean))]
+    .filter(c => !SHOP_FILTERS.includes(c));
+  const categories = [...SHOP_FILTERS, ...extraCats];
   if (state.activeFilter !== 'All' && !categories.includes(state.activeFilter)) {
     state.activeFilter = 'All';
   }
@@ -293,9 +296,6 @@ function viewHome() {
         <p>${shopProducts.length
           ? 'Try another filter or view all arrangements.'
           : 'When any account creates a bouquet in My Bouquet, it appears here for everyone.'}</p>
-        <button class="btn btn-primary" type="button" data-reload-products>
-          ${shopProducts.length ? 'Show all bouquets' : 'Reload products'}
-        </button>
       </div>
     `;
 
@@ -319,7 +319,6 @@ function viewHome() {
     </div>
     <div class="filters">
       ${categories.map(c => `<button type="button" class="chip ${c === state.activeFilter ? 'active' : ''}" data-filter="${c}">${escapeHtml(c)}</button>`).join('')}
-      <button class="btn btn-ghost btn-sm" type="button" data-reload-products>Refresh shop</button>
     </div>
     <div class="product-grid ${filtered.length ? '' : 'product-grid--empty'}">
       ${gridHtml}
@@ -346,6 +345,7 @@ function renderProductDetailModal() {
           <span class="product-cat">${escapeHtml(p.category)}</span>
           <h2 id="product-modal-title" class="product-name">${escapeHtml(p.name)}</h2>
           <p class="product-desc">${escapeHtml(p.description)}</p>
+          ${p.pickupAddress ? `<p class="product-modal-creator">Address: ${escapeHtml(p.pickupAddress)}</p>` : ''}
           ${p.isUserCreated && !p.isMine && p.creatorName
             ? `<p class="product-modal-creator">Created by ${escapeHtml(p.creatorName)}</p>`
             : ''}
@@ -541,9 +541,20 @@ function viewCart() {
         ` : `
           <div class="checkout-address">
             <div class="field">
+              <label for="delivery-phone">Phone number</label>
+              <input type="tel" id="delivery-phone" name="phone" required
+                placeholder="10-digit mobile number" autocomplete="tel" />
+            </div>
+            <div class="field address-lookup">
               <label for="delivery-address">Delivery address</label>
-              <textarea id="delivery-address" rows="4" required placeholder="House / flat no, street, area, city, state, postal code, phone"></textarea>
-              <p class="field-hint">Enter the full delivery address including contact details.</p>
+              <div class="address-lookup-row">
+                <input type="text" id="delivery-address" required autocomplete="off"
+                  placeholder="Start typing your Google / current address" />
+                <button class="btn btn-ghost" type="button" id="use-current-location">Use current location</button>
+              </div>
+              <input type="hidden" id="delivery-maps-url" value="" />
+              <div class="address-suggestions" id="delivery-suggestions" hidden></div>
+              <p class="field-hint">Type an address to see suggestions, or use your current location.</p>
             </div>
           </div>
           <div class="field">
@@ -1125,6 +1136,17 @@ function bouquetForm(editing) {
         <label>Description</label>
         <textarea name="description" rows="4" required>${escapeHtml(editing?.description || '')}</textarea>
       </div>
+      <div class="field address-lookup">
+        <label for="pickup-address">Studio / pickup address</label>
+        <div class="address-lookup-row">
+          <input type="text" name="pickupAddress" id="pickup-address" required autocomplete="off"
+            placeholder="Start typing your Google / current address"
+            value="${escapeHtml(editing?.pickupAddress || '')}" />
+          <button class="btn btn-ghost" type="button" id="use-pickup-location">Use current location</button>
+        </div>
+        <div class="address-suggestions" id="pickup-suggestions" hidden></div>
+        <p class="field-hint">This address is saved with your bouquet. Type to search, or use current location.</p>
+      </div>
       <div class="form-actions">
         <button class="btn btn-primary" type="submit">${editing ? 'Update bouquet' : 'Create bouquet'}</button>
         ${editing ? '<button class="btn btn-ghost" type="button" data-cancel-edit>Cancel</button>' : ''}
@@ -1320,6 +1342,12 @@ async function render() {
     await refreshCart();
     if (staleRender(seq)) return;
     app.innerHTML = viewCart();
+    bindAddressLookup({
+      inputId: 'delivery-address',
+      suggestionsId: 'delivery-suggestions',
+      locationBtnId: 'use-current-location',
+      mapsUrlId: 'delivery-maps-url'
+    });
   } else if (state.view === 'orders') {
     let orders = [];
     try {
@@ -1367,6 +1395,77 @@ async function render() {
     if (document.getElementById('product-form')) bindProductForm();
   }
   startTrackingPoll();
+}
+
+function bindAddressLookup({ inputId, suggestionsId, locationBtnId, mapsUrlId }) {
+  const input = document.getElementById(inputId);
+  const box = document.getElementById(suggestionsId);
+  const locBtn = document.getElementById(locationBtnId);
+  const mapsInput = mapsUrlId ? document.getElementById(mapsUrlId) : null;
+  if (!input || !box) return;
+  let timer;
+
+  async function search(query) {
+    if (query.trim().length < 3) {
+      box.hidden = true;
+      box.innerHTML = '';
+      return;
+    }
+    try {
+      const data = await api(`/places/search?q=${encodeURIComponent(query.trim())}`);
+      const suggestions = data.suggestions || [];
+      if (!suggestions.length) {
+        box.hidden = true;
+        box.innerHTML = '';
+        return;
+      }
+      box.hidden = false;
+      box.innerHTML = suggestions.map((item, index) => `
+        <button type="button" class="address-suggestion" data-address-index="${index}">
+          ${escapeHtml(item.label)}
+        </button>
+      `).join('');
+      box.querySelectorAll('[data-address-index]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const item = suggestions[Number(btn.getAttribute('data-address-index'))];
+          input.value = item.label;
+          if (mapsInput) mapsInput.value = item.mapsUrl || '';
+          box.hidden = true;
+        });
+      });
+    } catch (e) {
+      box.hidden = true;
+    }
+  }
+
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => search(input.value), 280);
+  });
+
+  locBtn?.addEventListener('click', () => {
+    if (!navigator.geolocation) {
+      toast('Location is not supported in this browser.');
+      return;
+    }
+    locBtn.disabled = true;
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      try {
+        const data = await api(`/places/reverse?lat=${pos.coords.latitude}&lon=${pos.coords.longitude}`);
+        if (data.label) input.value = data.label;
+        if (mapsInput && data.mapsUrl) mapsInput.value = data.mapsUrl;
+        box.hidden = true;
+        toast('Current address filled.');
+      } catch (err) {
+        toast(err.message || 'Could not detect current address.');
+      } finally {
+        locBtn.disabled = false;
+      }
+    }, () => {
+      locBtn.disabled = false;
+      toast('Allow location access to fill the current address.');
+    }, { enableHighAccuracy: true, timeout: 12000 });
+  });
 }
 
 function bindAuthForm(type) {
@@ -1451,6 +1550,11 @@ function bindResetPasswordForm() {
 function bindProductForm() {
   const form = document.getElementById('product-form');
   const errBox = document.getElementById('product-error');
+  bindAddressLookup({
+    inputId: 'pickup-address',
+    suggestionsId: 'pickup-suggestions',
+    locationBtnId: 'use-pickup-location'
+  });
   const fileInput = document.getElementById('image-file');
   const urlInput = document.getElementById('image-url');
   const preview = document.getElementById('image-preview');
@@ -1908,6 +2012,12 @@ app.addEventListener('click', async (e) => {
     }
     await refreshCart();
     app.innerHTML = viewCart();
+    bindAddressLookup({
+      inputId: 'delivery-address',
+      suggestionsId: 'delivery-suggestions',
+      locationBtnId: 'use-current-location',
+      mapsUrlId: 'delivery-maps-url'
+    });
     return;
   }
 
@@ -1916,6 +2026,12 @@ app.addEventListener('click', async (e) => {
     await api('/cart/remove', { method: 'POST', body: { productId: removeBtn.getAttribute('data-remove') } });
     await refreshCart();
     app.innerHTML = viewCart();
+    bindAddressLookup({
+      inputId: 'delivery-address',
+      suggestionsId: 'delivery-suggestions',
+      locationBtnId: 'use-current-location',
+      mapsUrlId: 'delivery-maps-url'
+    });
     return;
   }
 
@@ -1925,6 +2041,12 @@ app.addEventListener('click', async (e) => {
       return;
     }
     const address = document.getElementById('delivery-address')?.value.trim() || '';
+    const phone = document.getElementById('delivery-phone')?.value.trim() || '';
+    const googleMapsUrl = document.getElementById('delivery-maps-url')?.value.trim() || '';
+    if (!phone || phone.replace(/\D/g, '').length < 10) {
+      toast('Enter a valid phone number.');
+      return;
+    }
     if (!address) {
       toast('Enter a complete delivery address.');
       return;
@@ -1937,7 +2059,13 @@ app.addEventListener('click', async (e) => {
       const paymentMethod = document.querySelector('input[name="payment-method"]:checked')?.value || 'online';
       const data = await api('/checkout', {
         method: 'POST',
-        body: { address, paymentMethod }
+        body: {
+          address,
+          phone,
+          googleAddress: address,
+          googleMapsUrl,
+          paymentMethod
+        }
       });
       const tracking = data.order?.trackingNumber ? ` Tracking: ${data.order.trackingNumber}` : '';
       toast(`Order placed! 🌷 Thank you.${tracking}`);
@@ -2109,11 +2237,13 @@ function appendChatMessage(content, role) {
 function openChatWidget() {
   const widget = document.getElementById('chat-widget');
   if (widget) widget.classList.add('open');
+  document.getElementById('open-chat-btn')?.classList.add('is-hidden');
 }
 
 function closeChatWidget() {
   const widget = document.getElementById('chat-widget');
   if (widget) widget.classList.remove('open');
+  document.getElementById('open-chat-btn')?.classList.remove('is-hidden');
   const input = document.getElementById('chat-input');
   if (input) input.value = '';
 }

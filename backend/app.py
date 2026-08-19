@@ -1076,6 +1076,7 @@ def portable_schema_statements(kind):
             StockQuantity INTEGER NOT NULL DEFAULT 10,
             IsGiftItem INTEGER NOT NULL DEFAULT 0,
             OccasionTags TEXT NULL,
+            PickupAddress TEXT NULL,
             CreatedAt TEXT NOT NULL DEFAULT (__NOW__)
         )
         """,
@@ -1201,8 +1202,26 @@ def initialize_portable_database():
     with db_connection() as connection:
         for statement in portable_schema_statements(db_kind()):
             connection.execute(statement)
+        ensure_pickup_address_column(connection)
         seed_catalog_and_admin(connection)
         connection.commit()
+
+
+def ensure_pickup_address_column(connection):
+    try:
+        if using_sqlite():
+            connection.execute("ALTER TABLE Products ADD COLUMN PickupAddress TEXT")
+        elif using_postgres():
+            connection.execute("ALTER TABLE Products ADD COLUMN IF NOT EXISTS PickupAddress TEXT")
+        else:
+            connection.execute(
+                """
+                IF COL_LENGTH('dbo.Products', 'PickupAddress') IS NULL
+                    ALTER TABLE dbo.Products ADD PickupAddress NVARCHAR(1000) NULL
+                """
+            )
+    except Exception:
+        pass
 
 
 def initialize_sqlite():
@@ -1303,6 +1322,7 @@ def seed_catalog_and_admin(connection):
 
 def ensure_catalog_available(connection):
     """Keep admin seed and remove old featured catalog cards from the shop."""
+    ensure_pickup_address_column(connection)
     remove_legacy_catalog_products(connection)
     seed_catalog_and_admin(connection)
     connection.commit()
@@ -1389,6 +1409,9 @@ def initialize_database():
 
     IF COL_LENGTH('dbo.Products', 'OccasionTags') IS NULL
         ALTER TABLE dbo.Products ADD OccasionTags NVARCHAR(200) NULL;
+
+    IF COL_LENGTH('dbo.Products', 'PickupAddress') IS NULL
+        ALTER TABLE dbo.Products ADD PickupAddress NVARCHAR(1000) NULL;
 
     IF OBJECT_ID('dbo.Addresses', 'U') IS NULL
     CREATE TABLE dbo.Addresses (
@@ -2281,6 +2304,7 @@ def product_json(row, viewer_id=None):
         "stockQuantity": stock_quantity,
         "isGiftItem": is_gift,
         "occasionTags": occasion_tags,
+        "pickupAddress": getattr(row, "PickupAddress", None) or "",
     }
 
 
@@ -2309,7 +2333,7 @@ def validate_cart_for_checkout(connection, user_id, items):
 
 PRODUCT_SELECT_SQL = """
     SELECT p.Id, p.Name, p.Price, p.Category, p.Image, p.Description,
-           p.CreatedByUserId, creator.Name AS CreatorName
+           p.CreatedByUserId, creator.Name AS CreatorName, p.PickupAddress
     FROM dbo.Products p
     LEFT JOIN dbo.Users creator ON creator.Id = p.CreatedByUserId
 """
@@ -2413,7 +2437,7 @@ def require_admin(connection):
 def owned_product(connection, product_id, user_id):
     return connection.execute(
         """
-        SELECT Id, Name, Price, Category, Image, Description, CreatedByUserId
+        SELECT Id, Name, Price, Category, Image, Description, CreatedByUserId, PickupAddress
         FROM dbo.Products
         WHERE Id = ? AND CreatedByUserId = ?
         """,
@@ -2890,16 +2914,83 @@ def product_fields(data):
     category = str(data.get("category", "")).strip()
     image = str(data.get("image", "")).strip()
     description = str(data.get("description", "")).strip()
+    pickup_address = str(data.get("pickupAddress", "") or data.get("address", "") or "").strip()
     try:
         price = round(float(data.get("price", 0)), 2)
     except (TypeError, ValueError):
         price = 0
     if not name or not category or not image or not description or price <= 0:
         return None
-    # Temporary browser object URLs are never valid server image paths.
     if image.lower().startswith("blob:") or "blob:" in image.lower():
         return None
-    return name, price, category, image, description
+    if pickup_address and len(pickup_address) < 10:
+        return None
+    return name, price, category, image, description, pickup_address
+
+
+def validate_phone(phone):
+    digits = re.sub(r"\D", "", str(phone or ""))
+    if len(digits) < 10 or len(digits) > 15:
+        return None, "Enter a valid phone number with at least 10 digits."
+    return str(phone).strip(), None
+
+
+@app.get("/api/places/search")
+def places_search():
+    query = str(request.args.get("q", "") or "").strip()
+    if len(query) < 3:
+        return jsonify(suggestions=[])
+    try:
+        response = httpx.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": query, "format": "jsonv2", "addressdetails": 1, "limit": 6},
+            headers={"User-Agent": "PetalStemFlowerShop/1.0"},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        suggestions = []
+        for item in response.json() or []:
+            label = item.get("display_name") or ""
+            if not label:
+                continue
+            suggestions.append({
+                "label": label,
+                "lat": item.get("lat"),
+                "lon": item.get("lon"),
+                "mapsUrl": f"https://www.google.com/maps?q={item.get('lat')},{item.get('lon')}",
+            })
+        return jsonify(suggestions=suggestions)
+    except Exception:
+        app.logger.exception("Address search failed")
+        return jsonify(suggestions=[]), 200
+
+
+@app.get("/api/places/reverse")
+def places_reverse():
+    try:
+        lat = float(request.args.get("lat"))
+        lon = float(request.args.get("lon"))
+    except (TypeError, ValueError):
+        return jsonify(error="Latitude and longitude are required."), 400
+    try:
+        response = httpx.get(
+            "https://nominatim.openstreetmap.org/reverse",
+            params={"lat": lat, "lon": lon, "format": "jsonv2", "addressdetails": 1},
+            headers={"User-Agent": "PetalStemFlowerShop/1.0"},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        data = response.json() or {}
+        label = data.get("display_name") or ""
+        return jsonify(
+            label=label,
+            lat=lat,
+            lon=lon,
+            mapsUrl=f"https://www.google.com/maps?q={lat},{lon}",
+        )
+    except Exception:
+        app.logger.exception("Reverse geocode failed")
+        return jsonify(error="Could not detect the current address."), 502
 
 
 @app.post("/api/products")
@@ -2915,8 +3006,8 @@ def create_product():
         connection.execute(
             """
             INSERT INTO dbo.Products
-                (Id, Name, Price, Category, Image, Description, CreatedByUserId)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (Id, Name, Price, Category, Image, Description, PickupAddress, CreatedByUserId)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             product_id, *fields, user.Id,
         )
@@ -3076,7 +3167,7 @@ def update_product(product_id):
         connection.execute(
             """
             UPDATE dbo.Products
-            SET Name = ?, Price = ?, Category = ?, Image = ?, Description = ?
+            SET Name = ?, Price = ?, Category = ?, Image = ?, Description = ?, PickupAddress = ?
             WHERE Id = ? AND CreatedByUserId = ?
             """,
             *fields, product_id, user.Id,
@@ -3594,15 +3685,34 @@ def checkout():
         payment_method = normalize_payment_method(data.get("paymentMethod"))
 
         try:
+            phone, phone_error = validate_phone(data.get("phone"))
+            if phone_error:
+                return jsonify(error=phone_error), 400
+            google_address = str(data.get("googleAddress") or "").strip()
+            google_maps_url = str(data.get("googleMapsUrl") or "").strip()
+            combined_address = delivery_address
+            if phone:
+                combined_address = f"{delivery_address}\nPhone: {phone}"
             order_id, tracking_number = create_order_record(
                 connection,
                 user.Id,
                 items,
                 total,
-                delivery_address,
+                combined_address,
                 payment_method=payment_method,
                 payment_status=checkout_payment_status(payment_method),
             )
+            if google_address or google_maps_url:
+                connection.execute(
+                    """
+                    UPDATE dbo.Orders
+                    SET GoogleAddress = ?, GoogleMapsUrl = ?
+                    WHERE Id = ?
+                    """,
+                    google_address or None,
+                    google_maps_url or None,
+                    order_id,
+                )
             connection.execute("DELETE FROM dbo.CartItems WHERE UserId = ?", user.Id)
             connection.commit()
             order_row = fetch_order_row(connection, order_id)
