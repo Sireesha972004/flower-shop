@@ -281,23 +281,24 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 // Views
 // ---------------------------------------------------------------------------
 function viewHome() {
-  const categories = ['All', ...new Set(state.products.map(p => p.category).filter(Boolean))];
+  // Shop shows seller-created bouquets (default featured catalog removed).
+  const shopProducts = state.products.filter(p => p.isUserCreated);
+  const categories = ['All', ...new Set(shopProducts.map(p => p.category).filter(Boolean))];
   if (state.activeFilter !== 'All' && !categories.includes(state.activeFilter)) {
     state.activeFilter = 'All';
   }
-  // Show every bouquet in one shop grid for all visitors.
-  const filtered = filterProductsByCategory(state.products);
+  const filtered = filterProductsByCategory(shopProducts);
   const gridHtml = filtered.length
     ? filtered.map(productCard).join('')
     : `
       <div class="empty-state product-empty">
         <div class="big">✿</div>
-        <h3>${state.products.length ? 'No bouquets in this category' : 'Bouquets are loading'}</h3>
-        <p>${state.products.length
+        <h3>${shopProducts.length ? 'No bouquets in this category' : 'No bouquets yet'}</h3>
+        <p>${shopProducts.length
           ? 'Try another filter or view all arrangements.'
-          : 'If the shop is waking up, this can take a few seconds.'}</p>
+          : 'Create a bouquet from My Bouquet to list it in the shop.'}</p>
         <button class="btn btn-primary" type="button" data-reload-products>
-          ${state.products.length ? 'Show all bouquets' : 'Reload products'}
+          ${shopProducts.length ? 'Show all bouquets' : 'Reload products'}
         </button>
       </div>
     `;
@@ -312,7 +313,7 @@ function viewHome() {
       </div>
       <div class="hero-art">
         <img src="https://images.unsplash.com/photo-1462530260150-162092dbf011?w=900" alt="A hand-tied bouquet of fresh flowers" />
-        <div class="hero-badge"><strong>${Math.max(state.products.length, 1)}+</strong>fresh arrangements</div>
+        <div class="hero-badge"><strong>${Math.max(shopProducts.length, 1)}+</strong>fresh arrangements</div>
       </div>
     </section>
 

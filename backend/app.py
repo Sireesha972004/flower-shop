@@ -498,20 +498,9 @@ def add_security_headers(response):
 def api_options(path):
     return jsonify({}), 200
 
-PRODUCTS = [
-    ("p1", "Blush Romance Bouquet", 45.00, "Roses",
-     "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=600",
-     "A soft blush arrangement of garden roses, ranunculus, and eucalyptus."),
-    ("p2", "Sunlit Meadow", 38.50, "Mixed",
-     "https://images.unsplash.com/photo-1468327768560-75b448c4b124?w=600",
-     "Sunflowers, daisies, and wild greens for a bright, cheerful bunch."),
-    ("p3", "Velvet Plum", 52.00, "Premium",
-     "https://images.unsplash.com/photo-1455659817273-f96807779a8a?w=600",
-     "Deep plum dahlias and burgundy roses with trailing amaranthus."),
-    ("p4", "Pure White Peony", 60.00, "Premium",
-     "https://images.unsplash.com/photo-1490750967868-88aa4486c946?w=600",
-     "Elegant white peonies and lisianthus, wrapped in natural kraft."),
-]
+# Default featured catalog is disabled — shop shows seller-created bouquets only.
+PRODUCTS = []
+LEGACY_CATALOG_IDS = ("p1", "p2", "p3", "p4", "p5", "p6")
 
 
 def sync_catalog_prices(connection):
@@ -547,6 +536,28 @@ def sync_catalog_images(connection):
             "UPDATE dbo.Products SET Image = ? WHERE Id = ?",
             product[4],
             product[0],
+        )
+
+
+def remove_legacy_catalog_products(connection):
+    """Remove old seeded featured bouquets from the shop listing."""
+    for product_id in LEGACY_CATALOG_IDS:
+        in_orders = connection.execute(
+            "SELECT 1 FROM dbo.OrderItems WHERE ProductId = ?",
+            product_id,
+        ).fetchone()
+        in_cart = connection.execute(
+            "SELECT 1 FROM dbo.CartItems WHERE ProductId = ?",
+            product_id,
+        ).fetchone()
+        if in_orders or in_cart:
+            continue
+        connection.execute(
+            """
+            DELETE FROM dbo.Products
+            WHERE Id = ? AND CreatedByUserId IS NULL
+            """,
+            product_id,
         )
 
 
@@ -1219,6 +1230,7 @@ def upsert_seed_user(connection, email, password, name, is_admin=False):
 
 
 def seed_catalog_and_admin(connection):
+    remove_legacy_catalog_products(connection)
     for product in PRODUCTS:
         exists = connection.execute(
             "SELECT 1 FROM dbo.Products WHERE Id = ?",
@@ -1267,24 +1279,11 @@ def seed_catalog_and_admin(connection):
 
 
 def ensure_catalog_available(connection):
-    """Re-seed catalog products if the shop listing is empty or missing defaults."""
-    count_row = connection.execute(
-        "SELECT COUNT(*) AS ProductCount FROM dbo.Products"
-    ).fetchone()
-    total = int(getattr(count_row, "ProductCount", 0) or 0)
-    marker = connection.execute(
-        "SELECT 1 FROM dbo.Products WHERE Id = ?",
-        PRODUCTS[0][0],
-    ).fetchone()
-    if total == 0 or not marker:
-        seed_catalog_and_admin(connection)
-        connection.commit()
-        return True
-    # Keep featured catalog images/prices in sync without touching seller products.
-    sync_catalog_images(connection)
-    sync_catalog_prices(connection)
+    """Keep admin seed and remove old featured catalog cards from the shop."""
+    remove_legacy_catalog_products(connection)
+    seed_catalog_and_admin(connection)
     connection.commit()
-    return False
+    return True
 
 
 def initialize_database():
