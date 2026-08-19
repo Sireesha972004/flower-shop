@@ -329,7 +329,7 @@ function viewHome() {
         <button class="btn btn-primary" onclick="document.querySelector('.product-grid').scrollIntoView({behavior:'smooth'})">Browse bouquets</button>
       </div>
       <div class="hero-art">
-        <img src="https://images.unsplash.com/photo-1462530260150-162092dbf011?w=900" alt="A hand-tied bouquet of fresh flowers" />
+        <img src="hero-bouquet.png" alt="A hand-tied white bouquet with orchids, roses, and greenery" />
         <div class="hero-badge"><strong>${Math.max(shopProducts.length, 1)}+</strong>fresh arrangements</div>
       </div>
     </section>
