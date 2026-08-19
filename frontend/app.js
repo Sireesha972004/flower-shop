@@ -167,11 +167,10 @@ async function loadProducts({ force = false, retries = 3 } = {}) {
     try {
       const data = await api('/products');
       const products = Array.isArray(data.products) ? data.products : [];
-      state.products = products;
-      if (state.activeFilter !== 'All' && !products.some(p => p.category === state.activeFilter)) {
-        state.activeFilter = 'All';
-      }
-      return products;
+      // Keep every seller bouquet; never keep a stale category that hides them.
+      state.products = products.filter(p => p && (p.isUserCreated || p.createdBy));
+      state.activeFilter = 'All';
+      return state.products;
     } catch (err) {
       lastError = err;
       if (attempt < retries) {
@@ -278,8 +277,8 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 // Views
 // ---------------------------------------------------------------------------
 function viewHome() {
-  // Public shop: every seller's bouquets (API already returns only user products).
-  const shopProducts = (state.products || []).filter(p => p && (p.isUserCreated || p.createdBy));
+  // Public shop: every seller's bouquets for every visitor.
+  const shopProducts = Array.isArray(state.products) ? state.products.slice() : [];
   const categories = ['All', ...new Set(shopProducts.map(p => p.category).filter(Boolean))];
   if (state.activeFilter !== 'All' && !categories.includes(state.activeFilter)) {
     state.activeFilter = 'All';
@@ -293,7 +292,7 @@ function viewHome() {
         <h3>${shopProducts.length ? 'No bouquets in this category' : 'No bouquets yet'}</h3>
         <p>${shopProducts.length
           ? 'Try another filter or view all arrangements.'
-          : 'Sellers can create bouquets from My Bouquet and they will appear here for everyone.'}</p>
+          : 'When any account creates a bouquet in My Bouquet, it appears here for everyone.'}</p>
         <button class="btn btn-primary" type="button" data-reload-products>
           ${shopProducts.length ? 'Show all bouquets' : 'Reload products'}
         </button>
@@ -320,6 +319,7 @@ function viewHome() {
     </div>
     <div class="filters">
       ${categories.map(c => `<button type="button" class="chip ${c === state.activeFilter ? 'active' : ''}" data-filter="${c}">${escapeHtml(c)}</button>`).join('')}
+      <button class="btn btn-ghost btn-sm" type="button" data-reload-products>Refresh shop</button>
     </div>
     <div class="product-grid ${filtered.length ? '' : 'product-grid--empty'}">
       ${gridHtml}
@@ -1718,7 +1718,8 @@ function bindProductForm() {
       state.editingProductId = null;
       state.manageTab = 'mine';
       toast(editingId ? 'Bouquet updated and visible in the shop.' : 'Bouquet created and visible in the shop.');
-      render();
+      // Show the public shop so the new bouquet is visible to this account immediately.
+      navigate('home');
     } catch (e) {
       errBox.textContent = e.message;
       errBox.classList.add('show');

@@ -541,6 +541,7 @@ def sync_catalog_images(connection):
 
 def remove_legacy_catalog_products(connection):
     """Remove old seeded featured bouquets from the shop listing."""
+    # Prefer deleting by known ids, then any leftover catalog rows.
     for product_id in LEGACY_CATALOG_IDS:
         in_orders = connection.execute(
             "SELECT 1 FROM dbo.OrderItems WHERE ProductId = ?",
@@ -558,6 +559,28 @@ def remove_legacy_catalog_products(connection):
             WHERE Id = ? AND CreatedByUserId IS NULL
             """,
             product_id,
+        )
+    # Clean any other non-seller catalog rows that are not referenced.
+    leftover = connection.execute(
+        """
+        SELECT Id FROM dbo.Products
+        WHERE CreatedByUserId IS NULL
+        """
+    ).fetchall()
+    for row in leftover:
+        in_orders = connection.execute(
+            "SELECT 1 FROM dbo.OrderItems WHERE ProductId = ?",
+            row.Id,
+        ).fetchone()
+        in_cart = connection.execute(
+            "SELECT 1 FROM dbo.CartItems WHERE ProductId = ?",
+            row.Id,
+        ).fetchone()
+        if in_orders or in_cart:
+            continue
+        connection.execute(
+            "DELETE FROM dbo.Products WHERE Id = ? AND CreatedByUserId IS NULL",
+            row.Id,
         )
 
 
