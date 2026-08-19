@@ -2813,6 +2813,9 @@ def product_fields(data):
         price = 0
     if not name or not category or not image or not description or price <= 0:
         return None
+    # Temporary browser object URLs are never valid server image paths.
+    if image.lower().startswith("blob:") or "blob:" in image.lower():
+        return None
     return name, price, category, image, description
 
 

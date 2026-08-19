@@ -53,9 +53,12 @@ function buildTrackingUrl(trackingNumber) {
 
 function productImageUrl(image) {
   const value = String(image || '').trim();
-  if (!value) {
-    return 'https://images.unsplash.com/photo-1490750967868-88aa4486c946?w=600';
-  }
+  const fallback = 'https://images.unsplash.com/photo-1490750967868-88aa4486c946?w=600';
+  if (!value) return fallback;
+  // Crop/file previews use temporary blob: URLs — use them as-is.
+  if (/^blob:/i.test(value)) return value;
+  // Guard against previously saved broken "/uploads/blob:..." values.
+  if (/blob:/i.test(value)) return fallback;
   if (/^(https?:|data:|\/)/i.test(value)) return value;
   return `/uploads/${value.replace(/^uploads\//, '')}`;
 }
@@ -1644,6 +1647,9 @@ function bindProductForm() {
       }
 
       payload.image = String(payload.image || '').trim();
+      if (/^blob:/i.test(payload.image) || /blob:/i.test(payload.image)) {
+        throw new Error('Finish cropping/uploading the image before saving the bouquet.');
+      }
       if (!payload.image) {
         throw new Error('Upload an image from your computer or paste an image URL.');
       }
