@@ -1572,16 +1572,41 @@ def generate_tracking_number(connection):
 
 
 def utc_iso(value):
-    if not value:
+    parsed = parse_db_datetime(value)
+    if not parsed:
+        return None if value in (None, "") else str(value)
+    return parsed.isoformat()
+
+
+def parse_db_datetime(value):
+    if value is None or value == "":
         return None
-    if isinstance(value, str):
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        text = value.strip().replace("Z", "+00:00")
+        if " " in text and "T" not in text:
+            text = text.replace(" ", "T", 1)
         try:
-            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(text)
         except ValueError:
-            return value
-    if getattr(value, "tzinfo", None) is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.isoformat()
+            for fmt in (
+                "%Y-%m-%d %H:%M:%S.%f",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d",
+            ):
+                try:
+                    parsed = datetime.strptime(value.strip(), fmt)
+                    break
+                except ValueError:
+                    parsed = None
+            if parsed is None:
+                return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def normalize_order_status(status):
@@ -1773,7 +1798,7 @@ def record_order_status_event(
         status if event_type == "status" else (order_row.Status if order_row else "pending")
     )
     role = resolve_actor_role(connection, order_row, actor_user_id, actor_role)
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = db_datetime(db_now())
     clean_note = str(note or "").strip() or None
     clean_location = tracking_location_for(
         current_status,
@@ -1846,11 +1871,7 @@ def estimate_delivery_at(order_row, status):
         return None
     if getattr(order_row, "DeliveryDate", None):
         return utc_iso(order_row.DeliveryDate)
-    created = order_row.CreatedAt
-    if created and created.tzinfo is None:
-        created = created.replace(tzinfo=timezone.utc)
-    if not created:
-        created = datetime.now(timezone.utc)
+    created = parse_db_datetime(order_row.CreatedAt) or datetime.now(timezone.utc)
     offsets = {
         "pending": 2,
         "confirmed": 2,
@@ -3386,13 +3407,12 @@ def checkout():
             )
             connection.execute("DELETE FROM dbo.CartItems WHERE UserId = ?", user.Id)
             connection.commit()
+            order_row = fetch_order_row(connection, order_id)
+            return jsonify(order=build_tracking_payload(connection, order_row)), 201
         except Exception:
             connection.rollback()
             app.logger.exception("Checkout failed")
             return jsonify(error="Could not place your order. Please try again."), 500
-
-        order_row = fetch_order_row(connection, order_id)
-        return jsonify(order=build_tracking_payload(connection, order_row)), 201
 
 
 @app.get("/api/orders")
