@@ -51,16 +51,25 @@ function buildTrackingUrl(trackingNumber) {
   return `${window.location.origin}${window.location.pathname}?track=${encodeURIComponent(trackingNumber)}`;
 }
 
+const SHOP_IMAGE_FALLBACK = 'https://images.unsplash.com/photo-1490750967868-88aa4486c946?w=600';
+
 function productImageUrl(image) {
   const value = String(image || '').trim();
-  const fallback = 'https://images.unsplash.com/photo-1490750967868-88aa4486c946?w=600';
-  if (!value) return fallback;
+  if (!value) return SHOP_IMAGE_FALLBACK;
   // Crop/file previews use temporary blob: URLs — use them as-is.
   if (/^blob:/i.test(value)) return value;
   // Guard against previously saved broken "/uploads/blob:..." values.
-  if (/blob:/i.test(value)) return fallback;
+  if (/blob:/i.test(value)) return SHOP_IMAGE_FALLBACK;
   if (/^(https?:|data:|\/)/i.test(value)) return value;
   return `/uploads/${value.replace(/^uploads\//, '')}`;
+}
+
+function productImageTag(image, alt, extraAttrs = '') {
+  const src = escapeHtml(productImageUrl(image));
+  const safeAlt = escapeHtml(alt || 'Bouquet');
+  const fallback = escapeHtml(SHOP_IMAGE_FALLBACK);
+  return `<img src="${src}" alt="${safeAlt}" loading="lazy" ${extraAttrs}
+    onerror="if(!this.dataset.fallback){this.dataset.fallback='1';this.src='${fallback}';}" />`;
 }
 
 function isCatalogProduct(p) {
@@ -283,70 +292,20 @@ function viewHome() {
   if (state.activeFilter !== 'All' && !categories.includes(state.activeFilter)) {
     state.activeFilter = 'All';
   }
-  const { featured, community } = partitionShopProducts(state.products);
-  const filteredFeatured = filterProductsByCategory(featured);
-  const filteredCommunity = filterProductsByCategory(community);
-  const filteredAll = filterProductsByCategory(state.products);
-
-  function renderGrid(products, emptyTitle, emptyHint) {
-    if (products.length) return products.map(productCard).join('');
-    return `
+  // Show every seller + featured bouquet in one shop grid for all visitors.
+  const filtered = filterProductsByCategory(state.products);
+  const gridHtml = filtered.length
+    ? filtered.map(productCard).join('')
+    : `
       <div class="empty-state product-empty">
         <div class="big">✿</div>
-        <h3>${emptyTitle}</h3>
-        <p>${emptyHint}</p>
-      </div>
-    `;
-  }
-
-  const sectionsHtml = community.length
-    ? `
-      <div class="shop-section">
-        <div class="section-head shop-section-head">
-          <h2>Community bouquets</h2>
-          <span>${filteredCommunity.length} seller arrangement${filteredCommunity.length === 1 ? '' : 's'}</span>
-        </div>
-        <p class="shop-section-note">Bouquets listed by sellers on this site. These can be added to cart and ordered.</p>
-        <div class="product-grid ${filteredCommunity.length ? '' : 'product-grid--empty'}">
-          ${renderGrid(
-            filteredCommunity,
-            state.activeFilter === 'All' ? 'No seller bouquets yet' : 'No seller bouquets in this category',
-            state.activeFilter === 'All'
-              ? 'Create one from My Bouquet, or ask your admin to import seller products to this live site.'
-              : 'Try another filter or view all arrangements.'
-          )}
-        </div>
-      </div>
-      <div class="shop-section">
-        <div class="section-head shop-section-head">
-          <h2>Featured bouquets</h2>
-          <span>${filteredFeatured.length} shop arrangement${filteredFeatured.length === 1 ? '' : 's'}</span>
-        </div>
-        <div class="product-grid ${filteredFeatured.length ? '' : 'product-grid--empty'}">
-          ${renderGrid(
-            filteredFeatured,
-            'No featured bouquets in this category',
-            'Try another filter or view all arrangements.'
-          )}
-        </div>
-      </div>
-    `
-    : `
-      <div class="section-head">
-        <h2>Our Bouquets</h2>
-        <span>${filteredAll.length} arrangement${filteredAll.length === 1 ? '' : 's'}</span>
-      </div>
-      <div class="product-grid ${filteredAll.length ? '' : 'product-grid--empty'}">
-        ${renderGrid(
-          filteredAll,
-          state.products.length ? 'No bouquets in this category' : 'Bouquets are loading',
-          state.products.length
-            ? 'Try another filter or view all arrangements.'
-            : 'If the shop is waking up, this can take a few seconds.'
-        )}
-      </div>
-      <div class="shop-section-note shop-section-note--solo">
-        Seller bouquets from My Bouquet will appear here once they are created on this live site.
+        <h3>${state.products.length ? 'No bouquets in this category' : 'Bouquets are loading'}</h3>
+        <p>${state.products.length
+          ? 'Try another filter or view all arrangements.'
+          : 'If the shop is waking up, this can take a few seconds.'}</p>
+        <button class="btn btn-primary" type="button" data-reload-products>
+          ${state.products.length ? 'Show all bouquets' : 'Reload products'}
+        </button>
       </div>
     `;
 
@@ -364,11 +323,17 @@ function viewHome() {
       </div>
     </section>
 
+    <div class="section-head">
+      <h2>Our Bouquets</h2>
+      <span>${filtered.length} arrangement${filtered.length === 1 ? '' : 's'}</span>
+    </div>
     <div class="filters">
       ${categories.map(c => `<button type="button" class="chip ${c === state.activeFilter ? 'active' : ''}" data-filter="${c}">${escapeHtml(c)}</button>`).join('')}
       <button class="btn btn-ghost btn-sm" type="button" data-reload-products>Refresh shop</button>
     </div>
-    ${sectionsHtml}
+    <div class="product-grid ${filtered.length ? '' : 'product-grid--empty'}">
+      ${gridHtml}
+    </div>
     ${renderProductDetailModal()}
   `;
 }
@@ -385,7 +350,7 @@ function renderProductDetailModal() {
       <div class="product-modal" role="dialog" aria-labelledby="product-modal-title">
         <button type="button" class="product-modal-close" aria-label="Close">&times;</button>
         <div class="product-modal-image">
-          <img src="${escapeHtml(productImageUrl(p.image))}" alt="${escapeHtml(p.name)}" />
+          ${productImageTag(p.image, p.name)}
         </div>
         <div class="product-modal-body">
           <span class="product-cat">${escapeHtml(p.category)}</span>
@@ -414,13 +379,13 @@ function productCard(p) {
   const actionHtml = productCardAction(p);
   const footerHtml = `<div class="product-footer">${priceHtml}${actionHtml}</div>`;
   return `
-    <div class="product-card ${isCatalogProduct(p) ? 'product-card--browse' : ''}" data-product-detail="${p.id}" role="button" tabindex="0" aria-label="View ${escapeHtml(p.name)}">
+    <div class="product-card" data-product-detail="${p.id}" role="button" tabindex="0" aria-label="View ${escapeHtml(p.name)}">
       ${creatorTag}
-      <div class="product-img"><img src="${escapeHtml(productImageUrl(p.image))}" alt="${escapeHtml(p.name)}" loading="lazy" /></div>
+      <div class="product-img">${productImageTag(p.image, p.name)}</div>
       <div class="product-body">
-        <span class="product-cat">${p.category}</span>
-        <h3 class="product-name">${p.name}</h3>
-        <p class="product-desc">${p.description}</p>
+        <span class="product-cat">${escapeHtml(p.category)}</span>
+        <h3 class="product-name">${escapeHtml(p.name)}</h3>
+        <p class="product-desc">${escapeHtml(p.description)}</p>
         ${footerHtml}
       </div>
     </div>

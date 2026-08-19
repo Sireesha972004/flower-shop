@@ -500,18 +500,17 @@ def api_options(path):
 
 PRODUCTS = [
     ("p1", "Blush Romance Bouquet", 45.00, "Roses",
-     "https://images.unsplash.com/photo-1490750967868-88aa4486c946?w=600",
+     "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=600",
      "A soft blush arrangement of garden roses, ranunculus, and eucalyptus."),
     ("p2", "Sunlit Meadow", 38.50, "Mixed",
-     "https://images.unsplash.com/photo-1487070183336-b863922373d4?w=600",
+     "https://images.unsplash.com/photo-1468327768560-75b448c4b124?w=600",
      "Sunflowers, daisies, and wild greens for a bright, cheerful bunch."),
     ("p3", "Velvet Plum", 52.00, "Premium",
-     "https://images.unsplash.com/photo-1518895949257-7621c3c786d7?w=600",
+     "https://images.unsplash.com/photo-1455659817273-f96807779a8a?w=600",
      "Deep plum dahlias and burgundy roses with trailing amaranthus."),
     ("p4", "Pure White Peony", 60.00, "Premium",
-     "https://images.unsplash.com/photo-1509587584298-0f3b3a3a1797?w=600",
+     "https://images.unsplash.com/photo-1490750967868-88aa4486c946?w=600",
      "Elegant white peonies and lisianthus, wrapped in natural kraft."),
-   
 ]
 
 
@@ -1281,6 +1280,10 @@ def ensure_catalog_available(connection):
         seed_catalog_and_admin(connection)
         connection.commit()
         return True
+    # Keep featured catalog images/prices in sync without touching seller products.
+    sync_catalog_images(connection)
+    sync_catalog_prices(connection)
+    connection.commit()
     return False
 
 
@@ -2623,7 +2626,7 @@ def products():
             f"""
             {PRODUCT_SELECT_SQL}
             ORDER BY
-              CASE WHEN p.CreatedByUserId IS NULL THEN 0 ELSE 1 END,
+              CASE WHEN p.CreatedByUserId IS NULL THEN 1 ELSE 0 END,
               p.CreatedAt DESC,
               p.Name
             """
