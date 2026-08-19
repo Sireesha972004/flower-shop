@@ -4,3 +4,21 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: PROVISION_ON_LOGIN
+        value: "true"
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: APP_USER_EMAIL
+        sync: false
+      - key: APP_USER_PASSWORD
+        sync: false
+      # Optional but recommended for durable production data:
+      # Create a Render Postgres DB, then set DATABASE_URL to its
+      # Internal Database URL in the Render dashboard.
+      - key: DATABASE_URL
+        sync: false

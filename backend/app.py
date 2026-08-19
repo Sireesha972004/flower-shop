@@ -40,6 +40,14 @@ except ImportError:
     pyodbc = None
 import sqlite3
 
+try:
+    import psycopg2
+    import psycopg2.extras
+    from psycopg2 import IntegrityError as PostgresIntegrityError
+except ImportError:
+    psycopg2 = None
+    PostgresIntegrityError = None
+
 
 ROOT = Path(__file__).resolve().parent
 # Load environment from the backend folder and project root.
@@ -54,6 +62,10 @@ SQL_DRIVER = os.getenv("SQL_DRIVER", "ODBC Driver 17 for SQL Server")
 PORT = int(os.getenv("PORT", "3001"))
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@petalandstem.local").strip().lower()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "ChangeMe123!")
+APP_USER_EMAIL = os.getenv("APP_USER_EMAIL", "").strip().lower()
+APP_USER_PASSWORD = os.getenv("APP_USER_PASSWORD", "").strip()
+APP_USER_NAME = os.getenv("APP_USER_NAME", "Shop Customer").strip() or "Shop Customer"
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 AI_PROVIDER = "gemini"
 AI_MODEL = os.getenv("AI_MODEL", "gemini-flash-latest").strip()
@@ -70,15 +82,69 @@ ALLOWED_ORIGINS = [
     for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 ]
-SQLITE_PATH = Path(os.getenv("SQLITE_PATH", str(ROOT / "flowershop.db")))
+
+
+def resolve_sqlite_path():
+    explicit = os.getenv("SQLITE_PATH", "").strip()
+    if explicit:
+        return Path(explicit)
+    data_dir = os.getenv("DATA_DIR", "").strip()
+    if data_dir:
+        return Path(data_dir) / "flowershop.db"
+    if Path("/var/data").is_dir():
+        return Path("/var/data/flowershop.db")
+    return ROOT / "flowershop.db"
+
+
+SQLITE_PATH = resolve_sqlite_path()
+
+
+def normalize_database_url(url):
+    value = str(url or "").strip()
+    if not value:
+        return ""
+    if value.startswith("postgres://"):
+        value = "postgresql://" + value[len("postgres://") :]
+    if "sslmode=" not in value and (
+        "render.com" in value or os.getenv("RENDER")
+    ):
+        separator = "&" if "?" in value else "?"
+        value = f"{value}{separator}sslmode=require"
+    return value
+
+
+def db_kind():
+    if normalize_database_url(DATABASE_URL):
+        return "postgres"
+    if os.getenv("RENDER"):
+        return "sqlite"
+    if os.getenv("USE_SQLITE", "").strip().lower() in {"1", "true", "yes"}:
+        return "sqlite"
+    if pyodbc is None:
+        return "sqlite"
+    return "mssql"
 
 
 def using_sqlite():
-    if os.getenv("RENDER"):
+    return db_kind() == "sqlite"
+
+
+def using_postgres():
+    return db_kind() == "postgres"
+
+
+def using_portable_db():
+    return db_kind() in {"sqlite", "postgres"}
+
+
+def provision_on_login_enabled():
+    raw = os.getenv("PROVISION_ON_LOGIN", "").strip().lower()
+    if raw in {"0", "false", "no"}:
+        return False
+    if raw in {"1", "true", "yes"}:
         return True
-    if os.getenv("USE_SQLITE", "").strip().lower() in {"1", "true", "yes"}:
-        return True
-    return pyodbc is None
+    # Cloud/ephemeral deploys: first successful login creates the account.
+    return using_portable_db()
 MAX_DELIVERY_ADDRESS_LENGTH = 1000
 CURRENCY_SYMBOL = "₹"
 AI_SYSTEM_PROMPT = (
@@ -492,19 +558,57 @@ def connection_string(database):
     )
 
 
-def adapt_sqlite_sql(sql):
-    adapted = str(sql).replace("dbo.", "")
-    adapted = adapted.replace("LEN(", "LENGTH(")
-    adapted = adapted.replace("SYSUTCDATETIME()", "datetime('now')")
+def convert_qmark_placeholders(sql):
+    out = []
+    in_string = False
+    quote = None
+    for ch in str(sql):
+        if in_string:
+            out.append(ch)
+            if ch == quote:
+                in_string = False
+            continue
+        if ch in {"'", '"'}:
+            in_string = True
+            quote = ch
+            out.append(ch)
+            continue
+        if ch == "?":
+            out.append("%s")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def adapt_limit_one(sql):
+    adapted = str(sql)
     if re.search(r"SELECT\s+TOP\s+1\s", adapted, re.I):
         adapted = re.sub(r"SELECT\s+TOP\s+1\s", "SELECT ", adapted, count=1, flags=re.I)
         adapted = adapted.rstrip().rstrip(";") + " LIMIT 1"
     return adapted
 
 
+def adapt_sqlite_sql(sql):
+    adapted = str(sql).replace("dbo.", "")
+    adapted = adapted.replace("LEN(", "LENGTH(")
+    adapted = adapted.replace("SYSUTCDATETIME()", "datetime('now')")
+    return adapt_limit_one(adapted)
+
+
+def adapt_postgres_sql(sql):
+    adapted = str(sql).replace("dbo.", "")
+    adapted = adapted.replace("LEN(", "LENGTH(")
+    adapted = adapted.replace("SYSUTCDATETIME()", "(NOW() AT TIME ZONE 'utc')")
+    adapted = adapt_limit_one(adapted)
+    return convert_qmark_placeholders(adapted)
+
+
 class AttrRow:
     def __init__(self, row):
-        self._mapping = dict(row)
+        if hasattr(row, "keys"):
+            self._mapping = {key: row[key] for key in row.keys()}
+        else:
+            self._mapping = dict(row)
 
     def __getattr__(self, name):
         if name.startswith("_"):
@@ -550,6 +654,56 @@ class SqliteConnection:
 
 
 class SqliteCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        return AttrRow(row) if row is not None else None
+
+    def fetchall(self):
+        return [AttrRow(row) for row in self._cursor.fetchall()]
+
+
+class PostgresConnection:
+    def __init__(self, url):
+        if psycopg2 is None:
+            raise RuntimeError(
+                "psycopg2 is required when DATABASE_URL is set. "
+                "Install backend requirements and redeploy."
+            )
+        self._conn = psycopg2.connect(
+            normalize_database_url(url),
+            cursor_factory=psycopg2.extras.RealDictCursor,
+        )
+
+    def execute(self, sql, *params):
+        cursor = self._conn.cursor()
+        cursor.execute(adapt_postgres_sql(sql), params if params else None)
+        return PostgresCursor(cursor)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type:
+            self._conn.rollback()
+        else:
+            self._conn.commit()
+        self._conn.close()
+        return False
+
+
+class PostgresCursor:
     def __init__(self, cursor):
         self._cursor = cursor
 
@@ -761,8 +915,14 @@ def gemini_chat_completion(messages):
 
 
 def uploads_dir():
-    if os.getenv("RENDER") or using_sqlite():
-        path = Path(os.getenv("UPLOAD_DIR", "/tmp/flower-uploads"))
+    if os.getenv("UPLOAD_DIR", "").strip():
+        path = Path(os.getenv("UPLOAD_DIR").strip())
+    elif os.getenv("DATA_DIR", "").strip():
+        path = Path(os.getenv("DATA_DIR").strip()) / "uploads"
+    elif Path("/var/data").is_dir():
+        path = Path("/var/data/uploads")
+    elif os.getenv("RENDER") or using_portable_db():
+        path = Path("/tmp/flower-uploads")
     else:
         path = FRONTEND_DIR / "uploads"
     path.mkdir(parents=True, exist_ok=True)
@@ -795,6 +955,19 @@ def upsert_cart_item(connection, user_id, product_id, quantity):
             quantity,
         )
         return
+    if using_postgres():
+        connection.execute(
+            """
+            INSERT INTO CartItems (UserId, ProductId, Quantity)
+            VALUES (?, ?, ?)
+            ON CONFLICT (UserId, ProductId)
+            DO UPDATE SET Quantity = CartItems.Quantity + EXCLUDED.Quantity
+            """,
+            user_id,
+            product_id,
+            quantity,
+        )
+        return
     connection.execute(
         """
         MERGE dbo.CartItems AS target
@@ -812,6 +985,8 @@ def upsert_cart_item(connection, user_id, product_id, quantity):
 
 
 def db_connection():
+    if using_postgres():
+        return PostgresConnection(DATABASE_URL)
     if using_sqlite():
         SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
         return SqliteConnection(SQLITE_PATH)
@@ -839,21 +1014,21 @@ def validate_delivery_address(address):
     return normalized, None
 
 
-def initialize_sqlite():
-    schema_statements = [
+def portable_schema_statements(kind):
+    statements = [
         """
         CREATE TABLE IF NOT EXISTS Users (
             Id TEXT NOT NULL PRIMARY KEY,
             Name TEXT NOT NULL,
             Email TEXT NOT NULL UNIQUE,
-            PasswordHash BLOB NOT NULL,
-            PasswordSalt BLOB NOT NULL,
+            PasswordHash __BLOB__ NOT NULL,
+            PasswordSalt __BLOB__ NOT NULL,
             IsAdmin INTEGER NOT NULL DEFAULT 0,
             FavoriteFlowers TEXT NULL,
             FavoriteOccasion TEXT NULL,
             PreferredPaymentMethod TEXT NULL,
             PreferredAddressId TEXT NULL,
-            CreatedAt TEXT NOT NULL DEFAULT (datetime('now'))
+            CreatedAt TEXT NOT NULL DEFAULT (__NOW__)
         )
         """,
         """
@@ -868,7 +1043,7 @@ def initialize_sqlite():
             StockQuantity INTEGER NOT NULL DEFAULT 10,
             IsGiftItem INTEGER NOT NULL DEFAULT 0,
             OccasionTags TEXT NULL,
-            CreatedAt TEXT NOT NULL DEFAULT (datetime('now'))
+            CreatedAt TEXT NOT NULL DEFAULT (__NOW__)
         )
         """,
         """
@@ -883,7 +1058,7 @@ def initialize_sqlite():
             PostalCode TEXT NOT NULL,
             Country TEXT NOT NULL,
             Phone TEXT NOT NULL,
-            CreatedAt TEXT NOT NULL DEFAULT (datetime('now')),
+            CreatedAt TEXT NOT NULL DEFAULT (__NOW__),
             FOREIGN KEY (UserId) REFERENCES Users(Id) ON DELETE CASCADE
         )
         """,
@@ -903,13 +1078,13 @@ def initialize_sqlite():
             CancelledAt TEXT NULL,
             GoogleAddress TEXT NULL,
             GoogleMapsUrl TEXT NULL,
-            CreatedAt TEXT NOT NULL DEFAULT (datetime('now')),
+            CreatedAt TEXT NOT NULL DEFAULT (__NOW__),
             FOREIGN KEY (UserId) REFERENCES Users(Id)
         )
         """,
         """
         CREATE TABLE IF NOT EXISTS OrderStatusEvents (
-            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            Id __SERIAL__,
             OrderId TEXT NOT NULL,
             Status TEXT NOT NULL,
             Note TEXT NULL,
@@ -917,7 +1092,7 @@ def initialize_sqlite():
             CreatedByUserId TEXT NULL,
             EventType TEXT NOT NULL DEFAULT 'status',
             ActorRole TEXT NULL,
-            CreatedAt TEXT NOT NULL DEFAULT (datetime('now')),
+            CreatedAt TEXT NOT NULL DEFAULT (__NOW__),
             FOREIGN KEY (OrderId) REFERENCES Orders(Id) ON DELETE CASCADE
         )
         """,
@@ -933,7 +1108,7 @@ def initialize_sqlite():
         """,
         """
         CREATE TABLE IF NOT EXISTS OrderItems (
-            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            Id __SERIAL__,
             OrderId TEXT NOT NULL,
             ProductId TEXT NOT NULL,
             ProductName TEXT NOT NULL,
@@ -947,18 +1122,18 @@ def initialize_sqlite():
             TokenHash TEXT NOT NULL PRIMARY KEY,
             UserId TEXT NOT NULL,
             ExpiresAt TEXT NOT NULL,
-            CreatedAt TEXT NOT NULL DEFAULT (datetime('now')),
+            CreatedAt TEXT NOT NULL DEFAULT (__NOW__),
             FOREIGN KEY (UserId) REFERENCES Users(Id) ON DELETE CASCADE
         )
         """,
         """
         CREATE TABLE IF NOT EXISTS PasswordResets (
-            Id INTEGER PRIMARY KEY AUTOINCREMENT,
+            Id __SERIAL__,
             UserId TEXT NOT NULL,
             TokenHash TEXT NOT NULL,
             ExpiresAt TEXT NOT NULL,
             UsedAt TEXT NULL,
-            CreatedAt TEXT NOT NULL DEFAULT (datetime('now')),
+            CreatedAt TEXT NOT NULL DEFAULT (__NOW__),
             FOREIGN KEY (UserId) REFERENCES Users(Id) ON DELETE CASCADE
         )
         """,
@@ -968,11 +1143,80 @@ def initialize_sqlite():
             WHERE TrackingNumber IS NOT NULL
         """,
     ]
+    if kind == "postgres":
+        replacements = {
+            "__BLOB__": "BYTEA",
+            "__SERIAL__": "SERIAL PRIMARY KEY",
+            "__NOW__": "(NOW() AT TIME ZONE 'utc')",
+        }
+    else:
+        replacements = {
+            "__BLOB__": "BLOB",
+            "__SERIAL__": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "__NOW__": "(datetime('now'))",
+        }
+    rendered = []
+    for statement in statements:
+        text = statement
+        for token, value in replacements.items():
+            text = text.replace(token, value)
+        rendered.append(text)
+    return rendered
+
+
+def initialize_portable_database():
     with db_connection() as connection:
-        for statement in schema_statements:
+        for statement in portable_schema_statements(db_kind()):
             connection.execute(statement)
         seed_catalog_and_admin(connection)
         connection.commit()
+
+
+def initialize_sqlite():
+    initialize_portable_database()
+
+
+def initialize_postgres():
+    initialize_portable_database()
+
+
+def upsert_seed_user(connection, email, password, name, is_admin=False):
+    if not email or not password:
+        return
+    salt, password_hash = hash_password(password)
+    existing = connection.execute(
+        "SELECT Id FROM dbo.Users WHERE Email = ?",
+        email,
+    ).fetchone()
+    if existing:
+        connection.execute(
+            """
+            UPDATE dbo.Users
+            SET Name = ?, PasswordHash = ?, PasswordSalt = ?, IsAdmin = ?
+            WHERE Id = ?
+            """,
+            name,
+            password_hash,
+            salt,
+            1 if is_admin else 0,
+            existing.Id,
+        )
+        return existing.Id
+    user_id = "u_" + uuid.uuid4().hex[:16]
+    connection.execute(
+        """
+        INSERT INTO dbo.Users
+            (Id, Name, Email, PasswordHash, PasswordSalt, IsAdmin)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        user_id,
+        name,
+        email,
+        password_hash,
+        salt,
+        1 if is_admin else 0,
+    )
+    return user_id
 
 
 def seed_catalog_and_admin(connection):
@@ -992,28 +1236,30 @@ def seed_catalog_and_admin(connection):
             )
     sync_catalog_prices(connection)
     sync_catalog_images(connection)
-    admin = connection.execute(
-        "SELECT Id FROM dbo.Users WHERE Email = ?", ADMIN_EMAIL
-    ).fetchone()
-    if admin:
-        connection.execute(
-            "UPDATE dbo.Users SET IsAdmin = 1 WHERE Id = ?", admin.Id
-        )
-    else:
-        admin_id = "u_" + uuid.uuid4().hex[:16]
-        salt, password_hash = hash_password(ADMIN_PASSWORD)
-        connection.execute(
-            """
-            INSERT INTO dbo.Users
-                (Id, Name, Email, PasswordHash, PasswordSalt, IsAdmin)
-            VALUES (?, 'Store Admin', ?, ?, ?, 1)
-            """,
-            admin_id, ADMIN_EMAIL, password_hash, salt,
+    upsert_seed_user(
+        connection,
+        ADMIN_EMAIL,
+        ADMIN_PASSWORD,
+        "Store Admin",
+        is_admin=True,
+    )
+    if APP_USER_EMAIL and APP_USER_PASSWORD:
+        upsert_seed_user(
+            connection,
+            APP_USER_EMAIL,
+            APP_USER_PASSWORD,
+            APP_USER_NAME,
+            is_admin=False,
         )
 
 
 def initialize_database():
     uploads_dir()
+    if using_postgres():
+        initialize_postgres()
+        backfill_order_tracking()
+        backfill_event_actors()
+        return
     if using_sqlite():
         initialize_sqlite()
         backfill_order_tracking()
@@ -1271,7 +1517,7 @@ def backfill_order_tracking():
 
 def backfill_event_actors():
     with db_connection() as connection:
-        if using_sqlite():
+        if using_portable_db():
             connection.execute(
                 """
                 UPDATE OrderStatusEvents
@@ -1839,6 +2085,10 @@ def db_datetime(value):
         if isinstance(value, str):
             return value
         return value.strftime("%Y-%m-%d %H:%M:%S")
+    if using_postgres():
+        if isinstance(value, str):
+            return value
+        return value.strftime("%Y-%m-%d %H:%M:%S")
     return value
 
 
@@ -1846,6 +2096,41 @@ def show_reset_code_in_response():
     return bool(os.getenv("RENDER")) or os.getenv(
         "SHOW_RESET_CODE", ""
     ).strip().lower() in {"1", "true", "yes"}
+
+
+def name_from_email(email):
+    local = str(email or "").split("@", 1)[0]
+    cleaned = re.sub(r"[._+\-]+", " ", local).strip()
+    return cleaned.title() if cleaned else "Customer"
+
+
+def fetch_user_for_auth(connection, email):
+    return connection.execute(
+        """
+        SELECT Id, Name, Email, PasswordHash, PasswordSalt, IsAdmin
+        FROM dbo.Users WHERE Email = ?
+        """,
+        email,
+    ).fetchone()
+
+
+def create_user_account(connection, email, password, name=None, is_admin=False):
+    user_id = "u_" + uuid.uuid4().hex[:16]
+    salt, password_hash = hash_password(password)
+    connection.execute(
+        """
+        INSERT INTO dbo.Users
+            (Id, Name, Email, PasswordHash, PasswordSalt, IsAdmin)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        user_id,
+        name or name_from_email(email),
+        email,
+        password_hash,
+        salt,
+        1 if is_admin else 0,
+    )
+    return user_id
 
 
 def public_user(row):
@@ -2097,25 +2382,55 @@ def login():
     password = str(data.get("password", ""))
     if not email or not password:
         return jsonify(error="Email and password are required."), 400
+    if "@" not in email or "." not in email.split("@")[-1]:
+        return jsonify(error="Enter a valid email address."), 400
 
     with db_connection() as connection:
-        user = connection.execute(
-            """
-            SELECT Id, Name, Email, PasswordHash, PasswordSalt, IsAdmin
-            FROM dbo.Users WHERE Email = ?
-            """,
-            email,
-        ).fetchone()
-        if not user:
-            return jsonify(
-                error="No account found for this email. Sign up first or use Forgot password."
-            ), 401
-        _, candidate_hash = hash_password(password, as_bytes(user.PasswordSalt))
-        if not hmac.compare_digest(candidate_hash, as_bytes(user.PasswordHash)):
+        user = fetch_user_for_auth(connection, email)
+        if user:
+            _, candidate_hash = hash_password(password, as_bytes(user.PasswordSalt))
+            if not hmac.compare_digest(candidate_hash, as_bytes(user.PasswordHash)):
+                return jsonify(error="Invalid email or password."), 401
+            token = create_session(connection, user.Id)
+            connection.commit()
+            return jsonify(token=token, user=public_user(user))
+
+        # Production-safe first login: create the account when missing.
+        # Equivalent to public signup, but keeps the login flow working on
+        # ephemeral cloud databases after redeploys.
+        if not provision_on_login_enabled() or len(password) < 6:
             return jsonify(error="Invalid email or password."), 401
-        token = create_session(connection, user.Id)
+
+        try:
+            user_id = create_user_account(
+                connection,
+                email,
+                password,
+                name=name_from_email(email),
+            )
+        except Exception as exc:
+            is_unique = False
+            if isinstance(exc, sqlite3.IntegrityError):
+                is_unique = True
+            if PostgresIntegrityError is not None and isinstance(exc, PostgresIntegrityError):
+                is_unique = True
+            if not is_unique:
+                raise
+            connection.rollback()
+            user = fetch_user_for_auth(connection, email)
+            if not user:
+                return jsonify(error="Invalid email or password."), 401
+            _, candidate_hash = hash_password(password, as_bytes(user.PasswordSalt))
+            if not hmac.compare_digest(candidate_hash, as_bytes(user.PasswordHash)):
+                return jsonify(error="Invalid email or password."), 401
+            token = create_session(connection, user.Id)
+            connection.commit()
+            return jsonify(token=token, user=public_user(user))
+
+        token = create_session(connection, user_id)
         connection.commit()
-        return jsonify(token=token, user=public_user(user))
+        user = fetch_user_for_auth(connection, email)
+        return jsonify(token=token, user=public_user(user)), 201
 
 
 @app.post("/api/forgot-password")
@@ -3253,10 +3568,12 @@ def admin_update_order_status(order_id):
 def database_error(error):
     if isinstance(error, HTTPException):
         return error
-    db_errors = (sqlite3.Error,)
+    db_errors = [sqlite3.Error]
     if pyodbc is not None:
-        db_errors = (pyodbc.Error, sqlite3.Error)
-    if not isinstance(error, db_errors):
+        db_errors.append(pyodbc.Error)
+    if psycopg2 is not None:
+        db_errors.append(psycopg2.Error)
+    if not isinstance(error, tuple(db_errors)):
         raise error
     app.logger.exception("Database error: %s", error)
     return jsonify(error="Database error. Please try again."), 500
@@ -3277,10 +3594,22 @@ def frontend_file(filename):
     return send_from_directory(FRONTEND_DIR, filename)
 
 
+def describe_database():
+    kind = db_kind()
+    if kind == "postgres":
+        return "PostgreSQL (DATABASE_URL)"
+    if kind == "sqlite":
+        return f"SQLite {SQLITE_PATH}"
+    return f"{SQL_SERVER}\\{SQL_DATABASE}"
+
+
 if __name__ == "__main__":
     initialize_database()
-    print(f"Database: {'SQLite ' + str(SQLITE_PATH) if using_sqlite() else SQL_SERVER + '\\\\' + SQL_DATABASE}")
+    print(f"Database: {describe_database()}")
     print(f"Admin login: {ADMIN_EMAIL}")
+    if APP_USER_EMAIL:
+        print(f"App user login: {APP_USER_EMAIL}")
+    print(f"Provision on login: {provision_on_login_enabled()}")
     print(f"AI_PROVIDER: {AI_PROVIDER}")
     print(f"AI_MODEL: {AI_MODEL}")
     print(f"AI_API_KEY prefix: {AI_API_KEY[:6]}...")
