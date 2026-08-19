@@ -660,6 +660,8 @@ class SqliteConnection:
         self._conn = sqlite3.connect(str(path), timeout=30, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
+        self._conn.execute("PRAGMA journal_mode = WAL")
+        self._conn.execute("PRAGMA busy_timeout = 30000")
 
     def execute(self, sql, *params):
         cursor = self._conn.execute(adapt_sqlite_sql(sql), params if params else ())
@@ -1203,6 +1205,7 @@ def initialize_portable_database():
         for statement in portable_schema_statements(db_kind()):
             connection.execute(statement)
         ensure_pickup_address_column(connection)
+        ensure_created_at_column(connection)
         seed_catalog_and_admin(connection)
         connection.commit()
 
@@ -1218,6 +1221,27 @@ def ensure_pickup_address_column(connection):
                 """
                 IF COL_LENGTH('dbo.Products', 'PickupAddress') IS NULL
                     ALTER TABLE dbo.Products ADD PickupAddress NVARCHAR(1000) NULL
+                """
+            )
+    except Exception:
+        pass
+
+
+def ensure_created_at_column(connection):
+    try:
+        if using_sqlite():
+            connection.execute("ALTER TABLE Products ADD COLUMN CreatedAt TEXT")
+        elif using_postgres():
+            connection.execute(
+                "ALTER TABLE Products ADD COLUMN IF NOT EXISTS CreatedAt TEXT "
+                "NOT NULL DEFAULT (NOW() AT TIME ZONE 'utc')"
+            )
+        else:
+            connection.execute(
+                """
+                IF COL_LENGTH('dbo.Products', 'CreatedAt') IS NULL
+                    ALTER TABLE dbo.Products ADD CreatedAt DATETIME2 NOT NULL
+                        CONSTRAINT DF_Products_CreatedAt DEFAULT SYSUTCDATETIME()
                 """
             )
     except Exception:
@@ -1323,6 +1347,7 @@ def seed_catalog_and_admin(connection):
 def ensure_catalog_available(connection):
     """Keep admin seed and remove old featured catalog cards from the shop."""
     ensure_pickup_address_column(connection)
+    ensure_created_at_column(connection)
     remove_legacy_catalog_products(connection)
     seed_catalog_and_admin(connection)
     connection.commit()

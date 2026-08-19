@@ -181,20 +181,19 @@ function toast(msg) {
 // ---------------------------------------------------------------------------
 // Cart helpers
 // ---------------------------------------------------------------------------
-async function loadProducts({ force = false, retries = 3 } = {}) {
+async function loadProducts({ force = false, retries = 6 } = {}) {
   let lastError = null;
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     try {
       const data = await api('/products');
       const products = Array.isArray(data.products) ? data.products : [];
-      // Keep every seller bouquet; never keep a stale category that hides them.
-      state.products = products.filter(p => p && (p.isUserCreated || p.createdBy));
+      state.products = products.filter(Boolean);
       state.activeFilter = 'All';
       return state.products;
     } catch (err) {
       lastError = err;
       if (attempt < retries) {
-        await new Promise(resolve => setTimeout(resolve, 700 * attempt));
+        await new Promise(resolve => setTimeout(resolve, 900 * attempt));
       }
     }
   }
@@ -259,7 +258,7 @@ async function addToCart(productId) {
 // ---------------------------------------------------------------------------
 // Navigation / Router
 // ---------------------------------------------------------------------------
-function navigate(view) {
+async function navigate(view) {
   if ((view === 'cart' || view === 'orders' || view === 'manage' || view === 'admin-orders') && !state.token) {
     view = 'login';
     toast('Please log in first.');
@@ -273,7 +272,10 @@ function navigate(view) {
     state.editingProductId = null;
   }
   state.view = view;
-  void render();
+  if (view === 'home') {
+    await refreshProductsQuietly();
+  }
+  await render();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -1341,7 +1343,6 @@ async function render() {
   const seq = ++renderSeq;
 
   if (state.view === 'home') {
-    await refreshProductsQuietly();
     if (staleRender(seq)) return;
     app.innerHTML = viewHome();
   } else if (state.view === 'login') {
@@ -2343,9 +2344,12 @@ async function init() {
     }
   }
   try {
-    await loadProducts({ force: true, retries: 4 });
+    await loadProducts({ force: true, retries: 6 });
   } catch (e) {
-    toast('Could not load products. Tap Reload products or wait a moment and refresh.');
+    toast('Could not load products. Wait a moment and refresh again.');
+  }
+  if (state.token) {
+    await refreshMyProducts();
   }
   await refreshCart();
   await render();
